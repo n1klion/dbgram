@@ -113,6 +113,8 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
+Tags starting with `v0.` and tags with a suffix (`v1.0.0-beta.1`) are published as **pre-releases**.
+
 ### Project layout
 
 - `Sources/DBMLKit`: DBML lexer, parser and model, plus the layered auto-layout. Pure Swift, no UI.

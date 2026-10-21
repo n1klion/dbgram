@@ -57,4 +57,9 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "${{ steps.zip.outputs.zip }}" --title "DBGram $GITHUB_REF_NAME" --generate-notes
+        run: |
+          # v0.x.y and suffixed tags (v1.0.0-beta.1) are pre-releases: shown with a badge, never "Latest".
+          FLAGS=()
+          if [[ "$GITHUB_REF_NAME" == v0.* || "$GITHUB_REF_NAME" == *-* ]]; then FLAGS+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${{ steps.zip.outputs.zip }}" \
+            --title "DBGram $GITHUB_REF_NAME" --generate-notes "${FLAGS[@]}"
