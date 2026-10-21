@@ -108,8 +108,13 @@ Note sticky { 'hello' }
     #expect(s.diagnostics.contains { $0.message.contains("unknown table 'missing'") })
 }
 
-@Test func parsesAllExamples() throws {
-    let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../examples")
+/// Example schemas are optional (they may be kept out of the repo); tests using them skip without them.
+private let examplesDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../examples")
+private let hasExamples = FileManager.default.fileExists(atPath: examplesDir.appendingPathComponent("crafting.dbml").path)
+
+@Test(.enabled(if: hasExamples, "examples/ not present"))
+func parsesAllExamples() throws {
+    let dir = examplesDir
     let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil).filter { $0.pathExtension == "dbml" }
     #expect(!files.isEmpty)
     for f in files {
@@ -120,8 +125,9 @@ Note sticky { 'hello' }
     }
 }
 
-@Test func layoutHasNoOverlaps() throws {
-    let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../examples/crafting.dbml")
+@Test(.enabled(if: hasExamples, "examples/ not present"))
+func layoutHasNoOverlaps() throws {
+    let dir = examplesDir.appendingPathComponent("crafting.dbml")
     let s = DBML.parse(try String(contentsOf: dir, encoding: .utf8))
     let sizes = Dictionary(uniqueKeysWithValues: s.tables.map { ($0.id, CGSize(width: 260, height: 40 + 26 * CGFloat($0.columns.count))) })
     let pos = SchemaLayout.compute(schema: s, sizes: sizes)
@@ -133,4 +139,48 @@ Note sticky { 'hello' }
 @Test func overlapResolver() {
     let out = LayeredLayout.resolveOverlaps(desired: [0, 0, 100], heights: [50, 50, 50], gap: 10)
     #expect(out[1] - out[0] == 60 && out[2] - out[1] >= 60)
+}
+
+@Test func optionalRelationships() throws {
+    let s = DBML.parse("""
+    Table a { id int [pk]
+      b_id int [ref: >? b.id] }
+    Table b { id int [pk] }
+    Ref: a.id ?> b.id
+    Ref: b.id ?<? a.b_id
+    Ref: a.id - b.id
+    """)
+    #expect(s.diagnostics.isEmpty, "\(s.diagnostics)")
+    #expect(s.refs.count == 4)
+    #expect(!s.refs[0].from.isOptional && s.refs[0].to.isOptional)    // >?
+    #expect(s.refs[1].from.isOptional && !s.refs[1].to.isOptional)    // ?>
+    #expect(s.refs[1].from.cardinality == .many && s.refs[1].to.cardinality == .one)
+    #expect(s.refs[2].from.isOptional && s.refs[2].to.isOptional)     // ?<?
+    #expect(s.refs[2].from.cardinality == .one && s.refs[2].to.cardinality == .many)
+    #expect(!s.refs[3].from.isOptional && !s.refs[3].to.isOptional)   // -
+}
+
+@Test func recordsAreSkipped() {
+    let s = DBML.parse("""
+    Table users { id int
+      name varchar
+      records [example] { 1, 'Alice' } }
+    records users(id, name) [example] {
+      2, 'Bob'
+    }
+    """)
+    #expect(s.diagnostics.isEmpty, "\(s.diagnostics)")
+    #expect(s.tables.first?.columns.map(\.name) == ["id", "name"])
+}
+
+/// The samples ship with the repo, so they must always parse cleanly.
+@Test func parsesSamples() throws {
+    let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../samples")
+    let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil).filter { $0.pathExtension == "dbml" }
+    #expect(files.count >= 2)
+    for f in files {
+        let s = DBML.parse(try String(contentsOf: f, encoding: .utf8))
+        #expect(s.diagnostics.isEmpty, "\(f.lastPathComponent): \(s.diagnostics)")
+        #expect(!s.refs.isEmpty)
+    }
 }

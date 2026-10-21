@@ -283,7 +283,7 @@ private struct Parser {
                 table.indexes += try indexesBlock()
                 continue
             }
-            if t.isKeyword("records"), peek().isPunct("{") || peek().isPunct("(") {
+            if t.isKeyword("records"), peek().isPunct("{") || peek().isPunct("(") || peek().isPunct("[") {
                 while cur.kind != .eof, !cur.isPunct("{") { p += 1 }
                 skipBlock()
                 continue
@@ -626,7 +626,9 @@ private struct Parser {
                 }
             }
             let (fromCard, toCard): (Cardinality, Cardinality)
-            switch r.op {
+            // `?` before the operator makes the source side optional, after it the referenced side.
+            let fromOptional = r.op.hasPrefix("?"), toOptional = r.op.count > 1 && r.op.hasSuffix("?")
+            switch r.op.trimmingCharacters(in: CharacterSet(charactersIn: "?")) {
             case ">": (fromCard, toCard) = (.many, .one)
             case "<": (fromCard, toCard) = (.one, .many)
             case "<>": (fromCard, toCard) = (.many, .many)
@@ -634,8 +636,8 @@ private struct Parser {
             }
             var ref = Ref(
                 name: r.name,
-                from: RefEndpoint(tableID: tables[fi].id, columns: r.from.columns, cardinality: fromCard),
-                to: RefEndpoint(tableID: tables[ti].id, columns: r.to.columns, cardinality: toCard),
+                from: RefEndpoint(tableID: tables[fi].id, columns: r.from.columns, cardinality: fromCard, isOptional: fromOptional),
+                to: RefEndpoint(tableID: tables[ti].id, columns: r.to.columns, cardinality: toCard, isOptional: toOptional),
                 line: r.line)
             for s in r.settings {
                 switch s.key {

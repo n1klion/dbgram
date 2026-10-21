@@ -74,6 +74,8 @@ public struct RefEndpoint: Sendable, Equatable {
     public var tableID: String
     public var columns: [String]
     public var cardinality: Cardinality
+    /// Marked with `?` in DBML: rows on this side don't have to have a match.
+    public var isOptional = false
 }
 
 public struct Ref: Sendable, Equatable {

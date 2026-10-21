@@ -10,27 +10,45 @@ struct RelationText {
     var to: String { Self.endpoint(ref.to) }
 
     var kind: String {
+        let base: String
         switch (ref.from.cardinality, ref.to.cardinality) {
-        case (.many, .one): return "many-to-one"
-        case (.one, .many): return "one-to-many"
-        case (.one, .one): return "one-to-one"
-        case (.many, .many): return "many-to-many"
+        case (.many, .one): base = "many-to-one"
+        case (.one, .many): base = "one-to-many"
+        case (.one, .one): base = "one-to-one"
+        case (.many, .many): base = "many-to-many"
         }
+        return ref.from.isOptional || ref.to.isOptional ? base + ", optional" : base
+    }
+
+    /// "one", "many", "zero or one", "zero or many".
+    static func side(_ e: RefEndpoint) -> String {
+        let base = e.cardinality == .many ? "many" : "one"
+        return e.isOptional ? "zero or \(base)" : base
     }
 
     /// The DBML operator as written: `>`, `<`, `-` or `<>`.
     var op: String {
+        let core: String
         switch (ref.from.cardinality, ref.to.cardinality) {
-        case (.many, .one): return ">"
-        case (.one, .many): return "<"
-        case (.one, .one): return "-"
-        case (.many, .many): return "<>"
+        case (.many, .one): core = ">"
+        case (.one, .many): core = "<"
+        case (.one, .one): core = "-"
+        case (.many, .many): core = "<>"
         }
+        return (ref.from.isOptional ? "?" : "") + core + (ref.to.isOptional ? "?" : "")
     }
 
     /// A plain-language explanation, e.g. "Each row of sessions points to one row of users;
     /// a row of users can have many rows of sessions."
     var sentence: String {
+        // `?` on a side means that side may be absent, so rows on the *other* side may have no match.
+        var notes: [String] = []
+        if ref.to.isOptional { notes.append("A row of \(ref.from.tableID) may have no matching \(ref.to.tableID).") }
+        if ref.from.isOptional { notes.append("A row of \(ref.to.tableID) may have no matching \(ref.from.tableID).") }
+        return ([baseSentence] + notes).joined(separator: " ")
+    }
+
+    private var baseSentence: String {
         let child = ref.child, parent = ref.parent
         switch (ref.from.cardinality, ref.to.cardinality) {
         case (.one, .one):

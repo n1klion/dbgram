@@ -38,6 +38,7 @@ struct ContentView: View {
         .onAppear {
             Opener.register(openWindow)
             configureActions()
+            DebugHooks.screenshotIfRequested(model)
             if let url = fileURL { DispatchQueue.main.async { model.open(url) } }
             else if let text = initialPaste { model.loadPasted(text) }
             else if let url = Opener.takePending() { fileURL = url }
@@ -522,7 +523,7 @@ private struct EndpointCard: View {
                 .buttonStyle(.plain)
                 .help("Go to table")
                 Spacer()
-                Text(end.cardinality == .many ? "many" : "one").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                Text(RelationText.side(end)).font(.caption.weight(.medium)).foregroundStyle(.secondary)
             }
             ForEach(end.columns, id: \.self) { name in
                 let column = table?.columnIndex(named: name).map { table!.columns[$0] }
@@ -536,7 +537,7 @@ private struct EndpointCard: View {
                             .foregroundStyle(column == nil ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                     }
                     if let c = column {
-                        let flags = [c.isNotNull ? "not null" : "nullable", c.isUnique ? "unique" : nil].compactMap { $0 }
+                        let flags = [c.isNotNull || c.isPrimaryKey ? "not null" : "nullable", c.isUnique ? "unique" : nil].compactMap { $0 }
                         Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.tertiary)
                         if let note = c.note { Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                     }

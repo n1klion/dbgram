@@ -170,7 +170,8 @@ public enum LayeredLayout {
         // Split very tall layers into several columns so the diagram stays roughly 16:10.
         let area = members.reduce(CGFloat(0)) { $0 + (nodes[$1].size.width + spacing.horizontal) * (nodes[$1].size.height + spacing.vertical) }
         let tallest = members.map { nodes[$0].size.height }.max() ?? 0
-        let targetHeight = max(tallest, (area * 10 / 16).squareRoot())
+        // Never split a column that is only a few tables tall: its edges would cross the extra column.
+        let targetHeight = max(tallest * 2.5, (area * 10 / 16).squareRoot())
         var columns: [[Int]] = []
         for l in layers {
             let height = l.reduce(CGFloat(0)) { $0 + nodes[$1].size.height + spacing.vertical }

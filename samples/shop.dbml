@@ -1,0 +1,165 @@
+// An online shop: shows table groups, header colors, notes, enums,
+// composite keys, optional relationships and a self-reference.
+
+Project shop {
+  database_type: 'PostgreSQL'
+  Note: 'Sample schema for DBGram'
+}
+
+Enum order_status {
+  pending
+  paid
+  shipped
+  delivered
+  cancelled [note: 'Refund issued if already paid']
+}
+
+TableGroup customers [color: #3E63DD] {
+  customers
+  addresses
+  carts
+  cart_items
+}
+
+TableGroup catalog [color: #0E9F8E] {
+  categories
+  products
+  product_variants
+  product_images
+  reviews
+}
+
+TableGroup orders [color: #D6409F] {
+  orders
+  order_items
+  payments
+  shipments
+  coupons
+}
+
+Table customers {
+  id uuid [pk, default: `gen_random_uuid()`]
+  email varchar(255) [unique, not null]
+  full_name varchar [not null]
+  phone varchar
+  created_at timestamptz [not null, default: `now()`]
+  Note: 'A registered shopper. Guests check out without a row here.'
+}
+
+Table addresses {
+  id uuid [pk]
+  customer_id uuid [not null, ref: > customers.id]
+  line1 varchar [not null]
+  line2 varchar
+  city varchar [not null]
+  postal_code varchar [not null]
+  country char(2) [not null, note: 'ISO 3166-1 alpha-2']
+  is_default boolean [not null, default: false]
+}
+
+Table carts {
+  id uuid [pk]
+  customer_id uuid [ref: >? customers.id, note: 'Empty for guest carts']
+  updated_at timestamptz [not null]
+}
+
+Table cart_items {
+  cart_id uuid [not null, ref: > carts.id]
+  variant_id uuid [not null, ref: > product_variants.id]
+  quantity integer [not null, default: 1]
+
+  indexes {
+    (cart_id, variant_id) [pk]
+  }
+}
+
+Table categories {
+  id serial [pk, increment]
+  parent_id integer [ref: >? categories.id, note: 'Categories nest; top level has no parent']
+  name varchar [not null]
+  slug varchar [unique, not null]
+}
+
+Table products {
+  id uuid [pk]
+  category_id integer [not null, ref: > categories.id]
+  name varchar [not null]
+  description text
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  Note: 'What customers browse. Price and stock live on the variant.'
+}
+
+Table product_variants {
+  id uuid [pk]
+  product_id uuid [not null, ref: > products.id]
+  sku varchar [unique, not null]
+  size varchar
+  color varchar
+  price_cents integer [not null, note: 'Integer cents, never floats']
+  stock integer [not null, default: 0]
+}
+
+Table product_images {
+  id uuid [pk]
+  product_id uuid [not null, ref: > products.id]
+  url varchar [not null]
+  position smallint [not null, default: 0]
+}
+
+Table reviews {
+  id uuid [pk]
+  product_id uuid [not null, ref: > products.id]
+  customer_id uuid [not null, ref: > customers.id]
+  rating smallint [not null, note: '1 to 5']
+  body text
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (product_id, customer_id) [unique]
+  }
+}
+
+Table orders {
+  id uuid [pk]
+  customer_id uuid [ref: >? customers.id, note: 'Empty for guest checkout']
+  shipping_address_id uuid [not null, ref: > addresses.id]
+  coupon_code varchar [ref: >? coupons.code]
+  status order_status [not null, default: 'pending']
+  total_cents integer [not null]
+  placed_at timestamptz [not null, default: `now()`]
+}
+
+Table order_items {
+  order_id uuid [not null, ref: > orders.id]
+  variant_id uuid [not null, ref: > product_variants.id]
+  quantity integer [not null]
+  unit_price_cents integer [not null, note: 'Price at the time of purchase']
+
+  indexes {
+    (order_id, variant_id) [pk]
+  }
+}
+
+Table payments {
+  id uuid [pk]
+  order_id uuid [not null, ref: > orders.id]
+  provider varchar [not null]
+  amount_cents integer [not null]
+  succeeded_at timestamptz
+}
+
+Table shipments {
+  id uuid [pk]
+  order_id uuid [not null, unique, ref: - orders.id]
+  carrier varchar [not null]
+  tracking_number varchar
+  shipped_at timestamptz
+  delivered_at timestamptz
+}
+
+Table coupons {
+  code varchar [pk]
+  percent_off smallint [not null]
+  expires_at timestamptz
+}

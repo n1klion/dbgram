@@ -7,7 +7,7 @@ enum TokenKind: Equatable {
     case number
     case color          // #rrggbb
     case punct          // { } [ ] ( ) : , . ~ ;
-    case op             // < > - <>
+    case op             // < > - <>, each optionally with ? on either side (?> >? ?<? ...)
     case newline
     case eof
 }
@@ -89,12 +89,8 @@ struct Lexer {
                 let start = i
                 while i < s.count, isIdentByte(s[i]) { i += 1 }
                 tok = Token(kind: .ident, text: text(start, i), line: startLine)
-            } else if c == UInt8(ascii: "<") {
-                if peek(1) == UInt8(ascii: ">") { i += 2; tok = Token(kind: .op, text: "<>", line: startLine) }
-                else { i += 1; tok = Token(kind: .op, text: "<", line: startLine) }
-            } else if c == UInt8(ascii: ">") || c == UInt8(ascii: "-") {
-                i += 1
-                tok = Token(kind: .op, text: String(UnicodeScalar(c)), line: startLine)
+            } else if let op = relationOperator() {
+                tok = Token(kind: .op, text: op, line: startLine)
             } else if "{}[]():,.~;".utf8.contains(c) {
                 i += 1
                 if c == UInt8(ascii: "[") || c == UInt8(ascii: "(") { nesting += 1 }
@@ -119,6 +115,26 @@ struct Lexer {
     }
 
     private func peek(_ n: Int) -> UInt8? { i + n < s.count ? s[i + n] : nil }
+
+    /// `<`, `>`, `-`, `<>`, each optionally marked optional with `?` before and/or after.
+    private mutating func relationOperator() -> String? {
+        let q = UInt8(ascii: "?")
+        var j = i
+        var text = ""
+        if s[j] == q { text = "?"; j += 1 }
+        guard j < s.count else { return nil }
+        switch s[j] {
+        case UInt8(ascii: "<"):
+            if j + 1 < s.count, s[j + 1] == UInt8(ascii: ">") { text += "<>"; j += 2 } else { text += "<"; j += 1 }
+        case UInt8(ascii: ">"), UInt8(ascii: "-"):
+            text += String(UnicodeScalar(s[j])); j += 1
+        default:
+            return nil
+        }
+        if j < s.count, s[j] == q { text += "?"; j += 1 }
+        i = j
+        return text
+    }
 
     private func text(_ a: Int, _ b: Int) -> String { String(decoding: s[a..<b], as: UTF8.self) }
 

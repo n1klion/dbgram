@@ -143,23 +143,24 @@ enum EdgeGeometry {
         var rect: CGRect
         var rowY: CGFloat
         var cardinality: Cardinality
+        var isOptional = false
+
+        /// Length of the straight piece leaving the table; optional ends need room for the circle.
+        var stub: CGFloat { isOptional ? 30 : 16 }
     }
 
     static func path(from a: Anchor, to b: Anchor, sameTable: Bool) -> CGPath {
         let path = CGMutablePath()
-        let stub: CGFloat = 16
 
         if sameTable {
             let x = a.rect.maxX
             let p1 = CGPoint(x: x, y: a.rowY), p2 = CGPoint(x: x, y: b.rowY)
+            let s1 = CGPoint(x: x + a.stub, y: p1.y), s2 = CGPoint(x: x + b.stub, y: p2.y)
             let reach: CGFloat = 46 + abs(p2.y - p1.y) * 0.15
-            path.move(to: p1)
-            path.addLine(to: CGPoint(x: x + stub, y: p1.y))
-            path.addCurve(to: CGPoint(x: x + stub, y: p2.y),
-                          control1: CGPoint(x: x + reach, y: p1.y), control2: CGPoint(x: x + reach, y: p2.y))
-            path.addLine(to: p2)
-            addMarker(path, at: p1, direction: 1, a.cardinality)
-            addMarker(path, at: p2, direction: 1, b.cardinality)
+            path.move(to: s1)
+            path.addCurve(to: s2, control1: CGPoint(x: x + reach, y: p1.y), control2: CGPoint(x: x + reach, y: p2.y))
+            addEnd(path, at: p1, direction: 1, a)
+            addEnd(path, at: p2, direction: 1, b)
             return path
         }
 
@@ -172,32 +173,39 @@ enum EdgeGeometry {
 
         let p1 = CGPoint(x: da > 0 ? a.rect.maxX : a.rect.minX, y: a.rowY)
         let p2 = CGPoint(x: db > 0 ? b.rect.maxX : b.rect.minX, y: b.rowY)
-        let s1 = CGPoint(x: p1.x + da * stub, y: p1.y)
-        let s2 = CGPoint(x: p2.x + db * stub, y: p2.y)
+        let s1 = CGPoint(x: p1.x + da * a.stub, y: p1.y)
+        let s2 = CGPoint(x: p2.x + db * b.stub, y: p2.y)
         let reach: CGFloat = da == db
             ? max(50, abs(s2.x - s1.x) + 50)
             : max(40, min(abs(s2.x - s1.x) * 0.5, 260))
-        path.move(to: p1)
-        path.addLine(to: s1)
+        path.move(to: s1)
         path.addCurve(to: s2,
                       control1: CGPoint(x: s1.x + da * reach, y: s1.y),
                       control2: CGPoint(x: s2.x + db * reach, y: s2.y))
-        path.addLine(to: p2)
-        addMarker(path, at: p1, direction: da, a.cardinality)
-        addMarker(path, at: p2, direction: db, b.cardinality)
+        addEnd(path, at: p1, direction: da, a)
+        addEnd(path, at: p2, direction: db, b)
         return path
     }
 
-    /// "One" is a bar across the line; "many" is a crow's foot opening toward the table.
-    private static func addMarker(_ path: CGMutablePath, at p: CGPoint, direction d: CGFloat, _ c: Cardinality) {
-        switch c {
+    /// The straight stub from the table edge `p` out to where the curve starts, with markers:
+    /// "one" is a bar, "many" a crow's foot opening toward the table, and an optional end adds
+    /// a hollow circle ("zero") further out, with the line broken around it.
+    private static func addEnd(_ path: CGMutablePath, at p: CGPoint, direction d: CGFloat, _ end: Anchor) {
+        func pt(_ dx: CGFloat, _ dy: CGFloat = 0) -> CGPoint { CGPoint(x: p.x + d * dx, y: p.y + dy) }
+        let radius: CGFloat = 4, circleCenter: CGFloat = 20
+        path.move(to: p)
+        if end.isOptional {
+            path.addLine(to: pt(circleCenter - radius))
+            path.addEllipse(in: CGRect(x: pt(circleCenter).x - radius, y: p.y - radius, width: radius * 2, height: radius * 2))
+            path.move(to: pt(circleCenter + radius))
+        }
+        path.addLine(to: pt(end.stub))
+        switch end.cardinality {
         case .one:
-            path.move(to: CGPoint(x: p.x + d * 9, y: p.y - 5))
-            path.addLine(to: CGPoint(x: p.x + d * 9, y: p.y + 5))
+            path.move(to: pt(9, -5)); path.addLine(to: pt(9, 5))
         case .many:
-            let tip = CGPoint(x: p.x + d * 12, y: p.y)
-            path.move(to: tip); path.addLine(to: CGPoint(x: p.x, y: p.y - 6))
-            path.move(to: tip); path.addLine(to: CGPoint(x: p.x, y: p.y + 6))
+            path.move(to: pt(12)); path.addLine(to: pt(0, -6))
+            path.move(to: pt(12)); path.addLine(to: pt(0, 6))
         }
     }
 }
@@ -226,7 +234,7 @@ struct DiagramScene {
             let r = rect(t.id)
             let row = e.columns.first.flatMap { t.columnIndex(named: $0) }
             let y = row.map { r.minY + TableRenderer.rowCenterY($0) } ?? (r.minY + Metrics.headerHeight / 2)
-            return .init(rect: r, rowY: y, cardinality: e.cardinality)
+            return .init(rect: r, rowY: y, cardinality: e.cardinality, isOptional: e.isOptional)
         }
         return (anchor(ta, ref.from), anchor(tb, ref.to))
     }

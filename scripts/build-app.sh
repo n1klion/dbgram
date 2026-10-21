@@ -1,10 +1,27 @@
 #!/bin/bash
-# Builds a release DBGram.app into ./build. Usage: scripts/build-app.sh [--install]
+# Builds a release DBGram.app into ./build.
+# Usage: scripts/build-app.sh [--universal] [--install]
+#   --universal  Apple Silicon + Intel binary (used by CI)
+#   VERSION=1.2.3 sets the app version (CI passes the git tag)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-swift build -c release --product DBGram
-BIN="$(swift build -c release --show-bin-path)/DBGram"
+UNIVERSAL=0
+INSTALL=0
+for arg in "$@"; do
+  case "$arg" in
+    --universal) UNIVERSAL=1 ;;
+    --install) INSTALL=1 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+VERSION="${VERSION:-1.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
+
+ARCH_FLAGS=()
+if [[ $UNIVERSAL == 1 ]]; then ARCH_FLAGS=(--arch arm64 --arch x86_64); fi
+swift build -c release --product DBGram ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
+BIN="$(swift build -c release ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)/DBGram"
 
 APP=build/DBGram.app
 rm -rf "$APP"
@@ -33,8 +50,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>dev.n1klion.dbgram</string>
   <key>CFBundleExecutable</key><string>DBGram</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -66,7 +83,7 @@ PLIST
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 echo "Built $APP"
 
-if [[ "${1:-}" == "--install" ]]; then
+if [[ $INSTALL == 1 ]]; then
   rm -rf /Applications/DBGram.app
   cp -R "$APP" /Applications/
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/DBGram.app

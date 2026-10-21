@@ -1,23 +1,66 @@
 # DBGram
 
-A fast native macOS viewer for [DBML](https://dbml.dbdiagram.io/docs/) schemas (the dbdiagram.io language).
+A fast, native macOS viewer for database diagrams written in **DBML**, the schema language behind
+[dbdiagram.io](https://dbdiagram.io).
 
-- **Native and fast.** Each table is drawn once into a cached Core Animation layer, so pan and zoom only move GPU textures. Parsing plus layout of 1,500 tables (32k lines) takes about 200 ms.
-- **Live reload.** Edit the `.dbml` file in any editor and the diagram updates on save. Positions you dragged are kept.
-- **Auto layout.** Tables that are referenced sit on the left and the tables pointing at them sit on the right. Each `TableGroup` is laid out as its own cluster.
-- `headercolor`, TableGroup `color`, notes (hover a row or a table header), composite keys, enums, `TablePartial`, multi-line strings.
+I built it because big schemas got too slow to view in the browser. DBGram opens the same `.dbml`
+files you write for dbdiagram.io and draws them natively, so panning and zooming stay smooth even with
+hundreds of tables.
 
-## Build & run
+![DBGram showing an online-shop schema in dark mode, with the orders table selected](docs/images/overview-dark.png)
+
+> **About DBML and dbdiagram.io.** DBGram reads the [DBML syntax](https://dbml.dbdiagram.io/docs/)
+> created by [Holistics](https://www.holistics.io) for [dbdiagram.io](https://dbdiagram.io). Schemas written
+> for dbdiagram.io should open here as they are. DBGram is an independent project and is not affiliated with
+> dbdiagram.io or Holistics. If you want an online editor, sharing or SQL export, use dbdiagram.io.
+
+## Features
+
+- **Fast.** Each table is drawn once into a cached Core Animation layer, so pan, zoom and drag only move
+  GPU textures. Parsing plus layout of 1,500 tables (32k lines) takes about 200 ms.
+- **Live reload.** Keep editing the `.dbml` in your editor; every open window updates when you save.
+  This works with editors that save by replacing the file, and with files that are deleted and recreated
+  (e.g. by `git checkout`). Tables you dragged stay where you put them.
+- **Auto layout.** Referenced tables go on the left and the tables pointing at them on the right. Each
+  `TableGroup` becomes its own colored cluster.
+- **Relationships you can inspect.** Click a line to highlight it and its two columns, and read it in plain
+  words: one/many, optional ends, `on delete` / `on update`.
+- **Notes everywhere.** Hover a column or table header to read its note; the inspector shows notes,
+  indexes and enum values.
+- **DBML support:** tables, schemas and aliases, column settings, inline and standalone refs (including
+  composite and optional `?` refs), indexes, enums, `TableGroup`, `TablePartial`, notes, `headercolor`,
+  `Project`, and `Records` (skipped). Broken lines are listed with line numbers, and the rest still renders.
+- **Light and dark mode**, PNG export, find (⌘F), paste DBML from the clipboard.
+
+| Click a relationship | Small schemas too |
+| --- | --- |
+| ![The orders.customer_id to customers.id relationship selected, with its explanation in the inspector](docs/images/relationship-light.png) | ![The social sample in light mode with the posts table selected](docs/images/social-light.png) |
+
+## Install
+
+Download the latest `DBGram-*.zip` from [Releases](https://github.com/n1klion/dbgram/releases), unzip it and move `DBGram.app` to
+`/Applications`.
+
+The app is not notarized, so macOS blocks it the first time you open it. Right-click it and choose
+**Open**, or allow it under **System Settings → Privacy & Security → Open Anyway**. You can also clear the
+quarantine flag:
 
 ```sh
-scripts/build-app.sh            # -> build/DBGram.app
-scripts/build-app.sh --install  # also copies to /Applications and registers .dbml
-open build/DBGram.app --args examples/core.dbml
+xattr -dr com.apple.quarantine /Applications/DBGram.app
 ```
 
-Development: `swift run DBGram examples/core.dbml`, `swift test`.
+Requires macOS 14 or later, on Apple Silicon or Intel.
 
-Export without UI: `DBGram --render in.dbml out.png [--dark] [--scale 2]`.
+## Try it
+
+Open one of the sample schemas in [`samples/`](samples):
+
+- [`social.dbml`](samples/social.dbml): the dbdiagram.io starter schema (users, posts, follows).
+- [`shop.dbml`](samples/shop.dbml): an online shop with groups, colors, notes, enums and optional refs.
+
+```sh
+open -a DBGram samples/shop.dbml
+```
 
 ## Controls
 
@@ -26,15 +69,54 @@ Export without UI: `DBGram --render in.dbml out.png [--dark] [--scale 2]`.
 | Pan | two-finger scroll, or drag the background |
 | Zoom | pinch, ⌘/ctrl + scroll, mouse wheel, ⌘= / ⌘- |
 | Fit / 100% | ⌘0 or `F` / ⌘1 |
-| Find table or column | ⌘F, then Enter |
+| Find a table or column | ⌘F, then Enter |
 | Focus a table | double-click it, or click it in the sidebar |
+| Inspect a relationship | click its line; double-click to zoom to both tables |
 | Move a table | drag it (saved per file in `~/Library/Application Support/DBGram`) |
 | Re-arrange everything | ⌘⇧L |
-| Paste DBML from clipboard | ⌘⇧V |
+| Paste DBML from the clipboard | ⌘⇧V |
 | Export PNG | ⌘⇧E |
+| Clear the selection | Esc |
 
-## Layout
+## Build from source
 
-- `Sources/DBMLKit`: DBML lexer and parser (tolerant: errors are listed with line numbers and the rest still renders), model, layered layout.
-- `Sources/DBGram`: AppKit canvas (`DiagramCanvas`), table drawing, SwiftUI window shell.
-- `scripts/gen-stress.py`: generates big synthetic schemas for performance testing.
+Tested with Xcode 26 (Swift 6).
+
+```sh
+scripts/build-app.sh              # -> build/DBGram.app
+scripts/build-app.sh --install    # also copies it to /Applications and registers .dbml files
+scripts/build-app.sh --universal  # Apple Silicon + Intel binary
+```
+
+Development:
+
+```sh
+swift run DBGram samples/shop.dbml
+swift test
+scripts/screenshots.sh            # regenerates the images in docs/images
+```
+
+Render a diagram to PNG without opening a window:
+
+```sh
+DBGram --render schema.dbml out.png [--dark] [--scale 2]
+```
+
+### Releases
+
+`.github/workflows/build.yml` runs the tests and builds a universal `DBGram.app` on every push to `main`
+and on pull requests; the zipped app is attached to the workflow run under **Artifacts**. Pushing a
+version tag also publishes a GitHub Release:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### Project layout
+
+- `Sources/DBMLKit`: DBML lexer, parser and model, plus the layered auto-layout. Pure Swift, no UI.
+- `Sources/DBGram`: the app. It contains the AppKit canvas (`DiagramCanvas`), table drawing, file
+  watching and the SwiftUI window.
+- `samples/`: example schemas, also parsed by the tests.
+- `scripts/`: app bundling, screenshots, and `gen-stress.py` for big synthetic schemas.
