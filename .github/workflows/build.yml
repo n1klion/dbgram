@@ -12,6 +12,14 @@ permissions:
 
 jobs:
   build:
+    # Merging a release pull request into main also starts this build on the release tag
+    # (release-publish.yml), which runs the same tests, so skip the duplicate push build.
+    # Matches the merge commit ("Merge pull request #N from owner/release/vX.Y.Z") and a squash
+    # merge ("Release vX.Y.Z (#N)", the pull request title).
+    if: >-
+      !(github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        (contains(github.event.head_commit.message, '/release/v') ||
+         startsWith(github.event.head_commit.message, 'Release v')))
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v6
