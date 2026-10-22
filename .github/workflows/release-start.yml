@@ -1,0 +1,102 @@
+name: Start release
+
+# Git flow: work lands on `develop`. When it's tested, run this from Actions → Start release.
+# It branches release/vX.Y.Z off `develop` and opens a pull request into `main`.
+# Merging that pull request publishes the release (release-publish.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Part of the version to increase (from the latest v* tag)
+        type: choice
+        options: [patch, minor, major]
+        default: minor
+      version:
+        description: Exact version instead, e.g. 1.0.0-beta.1 (overrides the bump)
+        required: false
+        default: ""
+
+env:
+  DEVELOP: develop
+  MAIN: main
+
+permissions:
+  contents: write       # push the release branch
+  pull-requests: write  # open the pull request
+  actions: write        # start the build on the release branch
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.DEVELOP }}
+          fetch-depth: 0  # all tags and both branches
+
+      - name: Next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXACT: ${{ inputs.version }}
+        run: |
+          # Latest tag by version order; "-" suffixes (pre-releases) sort before the plain version.
+          latest="$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname | head -n1)"
+          current="${latest#v}"
+          current="${current:-0.0.0}"
+          if [[ -n "$EXACT" ]]; then
+            next="${EXACT#v}"
+          else
+            IFS=. read -r major minor patch <<< "${current%%-*}"
+            case "$BUMP" in
+              major) next="$((major + 1)).0.0" ;;
+              minor) next="$major.$((minor + 1)).0" ;;
+              patch) next="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+          if ! [[ "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$next' is not a version like 1.2.3 or 1.2.3-beta.1"; exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
+            echo "::error::Tag v$next already exists"; exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "release/v$next" >/dev/null; then
+            echo "::error::Branch release/v$next already exists"; exit 1
+          fi
+          if [[ -z "$(git log --oneline "origin/$MAIN..origin/$DEVELOP")" ]]; then
+            echo "::error::$DEVELOP has nothing that isn't on $MAIN yet"; exit 1
+          fi
+          echo "Latest release: ${latest:-none}. Starting v$next."
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create the release branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: git push origin "HEAD:refs/heads/release/v$VERSION"
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          notes="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="v$VERSION" -f target_commitish="release/v$VERSION" --jq .body)"
+          prerelease=""
+          if [[ "$VERSION" == 0.* || "$VERSION" == *-* ]]; then prerelease=" It will be published as a **pre-release**."; fi
+          gh pr create --base "$MAIN" --head "release/v$VERSION" --title "Release v$VERSION" --body "$(cat <<BODY
+          Merging this pull request tags \`v$VERSION\`, publishes the GitHub Release with the built app,
+          and merges \`$MAIN\` back into \`$DEVELOP\`.$prerelease
+
+          Last-minute fixes can be pushed to \`release/v$VERSION\` before merging.
+
+          ## What's in it
+          $notes
+          BODY
+          )"
+
+      # Pull requests opened by Actions don't run checks, so test and build the branch explicitly.
+      - name: Test and build the release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh workflow run build.yml --ref "release/v$VERSION"

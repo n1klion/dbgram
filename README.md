@@ -111,25 +111,28 @@ Render a diagram to PNG without opening a window:
 DBGram --render schema.dbml out.png [--dark] [--scale 2]
 ```
 
-### Releases
+### Branches and releases
 
-`.github/workflows/build.yml` runs the tests and builds a universal `DBGram.app` on every push to `main`
-and on pull requests; the zipped app is attached to the workflow run under **Artifacts**.
+The project uses git flow:
 
-To publish a release, open a pull request into `main` from a branch named `release/vX.Y.Z`:
+- **`develop`**: work in progress. Every push runs the tests and builds the app; the zip is attached to
+  the workflow run under **Artifacts**, so it can be tested before a release.
+- **`main`**: released code only. It changes only by merging a release.
 
-```sh
-git switch -c release/v0.2.0
-git push -u origin release/v0.2.0
-# open the pull request on GitHub and merge it
-```
+To release, go to **Actions → Start release → Run workflow** and pick `patch`, `minor` or `major`, or
+type an exact version such as `1.0.0-beta.1`. The workflow:
 
-Merging it runs `.github/workflows/release-publish.yml`. That workflow tags the merge commit `v0.2.0`,
-builds the app, publishes a GitHub Release with the zip and generated notes, and deletes the branch.
-Pushing a tag by hand (`git tag v0.2.0 && git push origin v0.2.0`) still works too.
+1. creates `release/vX.Y.Z` from `develop` and opens a pull request into `main`;
+2. tests and builds that branch, so you can try the app before merging. Fixes can still be pushed to
+   the branch.
+
+Merging the pull request runs `release-publish.yml`. It tags the merge commit `vX.Y.Z`, builds the app,
+publishes a GitHub Release with the zip and generated notes, merges `main` back into `develop`, and
+deletes the release branch.
 
 Versions starting with `0.` and versions with a suffix (`v1.0.0-beta.1`) are published as
-**pre-releases**.
+**pre-releases**. Pushing a tag by hand (`git tag v0.2.0 && git push origin v0.2.0`) also publishes
+a release.
 
 ### Project layout
 
@@ -138,3 +141,8 @@ Versions starting with `0.` and versions with a suffix (`v1.0.0-beta.1`) are pub
   watching and the SwiftUI window.
 - `samples/`: example schemas, also parsed by the tests.
 - `scripts/`: app bundling, screenshots, and `gen-stress.py` for big synthetic schemas.
+
+## License
+
+DBGram is released under the [MIT License](LICENSE). DBML and dbdiagram.io belong to Holistics;
+DBGram only reads the DBML format.
