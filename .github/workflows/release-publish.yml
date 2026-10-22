@@ -1,0 +1,54 @@
+name: Publish release
+
+# Merging a pull request from a branch named release/vX.Y.Z (e.g. release/v0.2.0 or
+# release/v1.0.0-beta.1) into the default branch tags the merge commit vX.Y.Z and starts
+# build.yml on that tag, which builds the app and publishes the GitHub Release.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write  # push the tag, delete the branch
+  actions: write   # start build.yml on the tag
+
+jobs:
+  publish:
+    if: >-
+      github.event.pull_request.merged &&
+      startsWith(github.event.pull_request.head.ref, 'release/v') &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0  # existing tags
+
+      - name: Tag the merge commit
+        id: tag
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          tag="${BRANCH#release/}"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Branch '$BRANCH' should be named release/vX.Y.Z, e.g. release/v0.2.0"; exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists"; exit 1
+          fi
+          git tag "$tag"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # A tag pushed by Actions doesn't trigger other workflows, so start the release build directly.
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: gh workflow run build.yml --ref "$TAG"
+
+      - name: Delete the release branch
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: git push origin --delete "$BRANCH" || true

@@ -67,18 +67,23 @@ enum ImageExporter {
     /// `DBGram --render input.dbml output.png [--dark] [--scale N]`
     static func runCommandLine(_ args: [String]) -> Int32 {
         guard let i = args.firstIndex(of: "--render"), args.count > i + 2 else {
-            FileHandle.standardError.write("usage: DBGram --render input.dbml output.png [--dark] [--scale N]\n".data(using: .utf8)!)
+            FileHandle.standardError.write("usage: DBGram --render input.dbml output.png [--dark] [--scale N] [--style leftRight|pipeline|compact]\n".data(using: .utf8)!)
             return 2
         }
         let input = URL(fileURLWithPath: args[i + 1]), output = URL(fileURLWithPath: args[i + 2])
         let scale = args.firstIndex(of: "--scale").flatMap { args.count > $0 + 1 ? Double(args[$0 + 1]) : nil } ?? 2
+        let styleArg = args.firstIndex(of: "--style").flatMap { args.count > $0 + 1 ? args[$0 + 1] : nil }
+        guard let style = styleArg.map({ LayoutStyle(rawValue: $0) }) ?? .leftRight else {
+            FileHandle.standardError.write("unknown style; use one of: \(LayoutStyle.allCases.map(\.rawValue).joined(separator: ", "))\n".data(using: .utf8)!)
+            return 2
+        }
         do {
             let t0 = Date()
             let source = try String(contentsOf: input, encoding: .utf8)
             let schema = DBML.parse(source)
             let t1 = Date()
             var scene = DiagramScene(schema: schema, positions: [:])
-            scene.positions = SchemaLayout.compute(schema: schema, sizes: scene.sizes)
+            scene.positions = SchemaLayout.compute(schema: schema, sizes: scene.sizes, style: style)
             let t2 = Date()
             guard let image = render(scene, theme: args.contains("--dark") ? .dark : .light, scale: CGFloat(scale)) else { return 1 }
             try writePNG(image, to: output)
