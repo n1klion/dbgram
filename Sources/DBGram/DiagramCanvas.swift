@@ -30,9 +30,11 @@ final class TableLayer: CALayer {
 
 final class DiagramCanvas: NSView {
     // Callbacks to the document model.
-    var onSelect: ((String?) -> Void)?
+    /// The primary table (inspector, sidebar) and every selected table.
+    var onSelect: ((String?, Set<String>) -> Void)?
     var onSelectRef: ((Int?) -> Void)?
-    var onTablesMoved: (([String: CGPoint]) -> Void)?
+    /// Tables were dragged or nudged: positions before and after, for the tables that moved.
+    var onTablesMoved: ((_ old: [String: CGPoint], _ new: [String: CGPoint], _ isNudge: Bool) -> Void)?
     var onViewportChanged: ((CGFloat, CGPoint) -> Void)?
 
     private(set) var scene: DiagramScene?
@@ -54,7 +56,9 @@ final class DiagramCanvas: NSView {
     private var edgesByTable: [String: [Int]] = [:]
     private var groupLayers: [String: (frame: CAShapeLayer, title: CATextLayer)] = [:]
 
+    /// The primary selected table; always in `selectedTables` when set.
     private(set) var selection: String?
+    private(set) var selectedTables: Set<String> = []
     /// Index into `scene.schema.refs` of the selected relationship.
     private(set) var selectedRef: Int?
     private var hovered: String?
@@ -63,13 +67,13 @@ final class DiagramCanvas: NSView {
 
     /// What is highlighted: a hovered/selected table with its relationships, or one relationship.
     private enum Focus: Equatable {
-        case table(String)
+        case tables(Set<String>)
         case ref(Int)
     }
     private var currentFocus: Focus? {
-        if let hovered { return .table(hovered) }
+        if let hovered { return .tables([hovered]) }
         if let selectedRef { return .ref(selectedRef) }
-        return selection.map { .table($0) }
+        return selectedTables.isEmpty ? nil : .tables(selectedTables)
     }
     /// What the last highlight pass applied, so the next one only touches layers that change.
     private var highlightedFocus: Focus?
@@ -78,11 +82,22 @@ final class DiagramCanvas: NSView {
     private var settleWork: DispatchWorkItem?
     private var tooltip: TooltipView?
     private var tooltipWork: DispatchWorkItem?
+    /// Tables sliding to new positions (auto-arrange, undo, redo).
+    private var slide: (from: [String: CGPoint], to: [String: CGPoint], start: CFTimeInterval, link: CADisplayLink)?
 
     private enum Drag {
         case pan(start: CGPoint, offset: CGPoint, edge: Int?)
-        case table(id: String, grab: CGPoint, moved: Bool)
+        /// Moving every selected table. `collapse`: a plain click on a table that is part of a
+        /// multi-selection selects only that table if the mouse goes up without moving.
+        case tables(grab: CGPoint, origins: [String: CGPoint], collapse: String?, moved: Bool)
+        /// Drag on the background: select the tables touching the rectangle (added to `base` with ⇧/⌘).
+        /// Starts after a few points of movement; a plain click selects the line under it, or clears.
+        case marquee(start: CGPoint, base: Set<String>, edge: Int?, active: Bool)
     }
+    /// Space held: the next drag pans instead of selecting.
+    private var spaceHeld = false
+    private let marqueeLayer = CAShapeLayer()
+
     private var drag: Drag?
 
     static let minZoom: CGFloat = 0.04
@@ -104,6 +119,10 @@ final class DiagramCanvas: NSView {
             world.addSublayer(l)
         }
         root.addSublayer(world)
+        marqueeLayer.lineWidth = 1
+        marqueeLayer.isHidden = true
+        marqueeLayer.actions = ["path": NSNull(), "hidden": NSNull()]
+        root.addSublayer(marqueeLayer)
         updateTheme()
     }
 
@@ -135,6 +154,7 @@ final class DiagramCanvas: NSView {
 
     /// Installs a new scene. Table layers whose table didn't change are reused as-is.
     func load(_ newScene: DiagramScene) {
+        stopSlide()
         let oldTables = scene.map { Dictionary(uniqueKeysWithValues: $0.schema.tables.map { ($0.id, $0) }) } ?? [:]
         let oldStyle = scene?.style
         let oldRef = selectedRef.flatMap { i in scene.flatMap { i < $0.schema.refs.count ? $0.schema.refs[i] : nil } }
@@ -172,7 +192,8 @@ final class DiagramCanvas: NSView {
             rebuildEdges()
             rebuildGroups()
         }
-        if let s = selection, newScene.schema.table(id: s) == nil { selection = nil }
+        selectedTables = selectedTables.filter { newScene.schema.table(id: $0) != nil }
+        if let s = selection, !selectedTables.contains(s) { selection = nil }
         // The same relationship may have moved to another index (or another line) after an edit.
         let newRef = oldRef.flatMap { old in newScene.schema.refs.firstIndex { $0.from == old.from && $0.to == old.to } }
         if newRef != selectedRef {
@@ -267,6 +288,8 @@ final class DiagramCanvas: NSView {
         theme = newTheme
         withoutAnimation {
             root.backgroundColor = theme.background.cgColor
+            marqueeLayer.strokeColor = theme.accent.cgColor
+            marqueeLayer.fillColor = theme.accent.withAlphaComponent(0.1).cgColor
             guard changed else { return }
             for l in tableLayers.values {
                 l.theme = theme
@@ -341,7 +364,7 @@ final class DiagramCanvas: NSView {
     private func applySelectionRing() {
         withoutAnimation {
             for (id, l) in tableLayers {
-                let selected = id == selection
+                let selected = selectedTables.contains(id)
                 l.borderWidth = selected ? 2 : 0
                 l.borderColor = theme.accent.cgColor
                 l.zPosition = selected ? 1 : 0
@@ -359,12 +382,14 @@ final class DiagramCanvas: NSView {
         var related: Set<String> = []
         var edges: Set<Int> = []
         switch focus {
-        case .table(let id):
-            related.insert(id)
-            for i in edgesByTable[id] ?? [] {
-                edges.insert(i)
-                related.insert(scene.schema.refs[i].from.tableID)
-                related.insert(scene.schema.refs[i].to.tableID)
+        case .tables(let ids):
+            related = ids
+            for id in ids {
+                for i in edgesByTable[id] ?? [] {
+                    edges.insert(i)
+                    related.insert(scene.schema.refs[i].from.tableID)
+                    related.insert(scene.schema.refs[i].to.tableID)
+                }
             }
         case .ref(let i) where i < scene.schema.refs.count:
             edges.insert(i)
@@ -438,32 +463,66 @@ final class DiagramCanvas: NSView {
     func focus(table id: String) {
         guard let scene, scene.schema.table(id: id) != nil else { return }
         select(id)
+        center(on: id)
+    }
+
+    /// Scrolls (and zooms in if tiny) to a table without changing the selection.
+    func center(on id: String) {
+        guard let scene, scene.schema.table(id: id) != nil else { return }
         let r = scene.rect(id)
         let z = max(zoom, min(1, (bounds.height - 80) / r.height))
         setViewport(zoom: z, offset: CGPoint(x: bounds.midX - r.midX * z, y: bounds.midY - r.midY * z), animated: true)
     }
 
     func select(_ id: String?) {
+        setSelection(id.map { [$0] } ?? [], primary: id)
+    }
+
+    /// Adds a table to the selection, or removes it if it's already selected.
+    func toggle(_ id: String) {
+        var tables = selectedTables
+        if tables.remove(id) == nil {
+            tables.insert(id)
+            setSelection(tables, primary: id)
+        } else {
+            setSelection(tables, primary: selection == id ? nil : selection)
+        }
+    }
+
+    /// Selects tables; `primary` falls back to one of them (first in the schema) when it isn't in the set.
+    func setSelection(_ tables: Set<String>, primary: String?) {
+        guard let scene else { return }
+        let tables = tables.filter { scene.schema.table(id: $0) != nil }
+        let primary = primary.flatMap { tables.contains($0) ? $0 : nil }
+            ?? (tables.isEmpty ? nil : scene.schema.tables.first { tables.contains($0.id) }?.id)
         if selectedRef != nil {
             selectedRef = nil
             updateRowHighlights()
             onSelectRef?(nil)
         }
-        guard selection != id else { applyHighlight(); return }
-        selection = id
+        guard tables != selectedTables || primary != selection else { applyHighlight(); return }
+        selectedTables = tables
+        selection = primary
         applySelectionRing()
         applyHighlight()
-        onSelect?(id)
+        onSelect?(primary, tables)
+    }
+
+    /// Edit → Select All (⌘A) while the diagram has focus.
+    override func selectAll(_ sender: Any?) {
+        guard let scene else { return }
+        setSelection(Set(scene.schema.tables.map(\.id)), primary: selection)
     }
 
     /// Selects a relationship; `reveal` zooms so both of its tables are in view.
     func selectRef(_ i: Int?, reveal: Bool = false) {
         guard let scene else { return }
         let i = i.flatMap { $0 < scene.schema.refs.count ? $0 : nil }
-        if i != nil, selection != nil {
+        if i != nil, !selectedTables.isEmpty {
             selection = nil
+            selectedTables = []
             applySelectionRing()
-            onSelect?(nil)
+            onSelect?(nil, [])
         }
         if i != selectedRef {
             selectedRef = i
@@ -575,31 +634,66 @@ final class DiagramCanvas: NSView {
         window?.makeFirstResponder(self)
         hideTooltip()
         let p = convert(e.locationInWindow, from: nil)
+        let extend = !e.modifierFlags.intersection([.shift, .command]).isEmpty
         if let id = hitTable(p) {
-            if e.clickCount == 2 { focus(table: id); return }
-            select(id)
-            let origin = scene?.positions[id] ?? .zero
-            let w = toWorld(p)
-            drag = .table(id: id, grab: CGPoint(x: w.x - origin.x, y: w.y - origin.y), moved: false)
-            // Bring to front.
-            if let l = tableLayers[id] { withoutAnimation { tablesLayer.addSublayer(l) } }
+            if e.clickCount == 2, !extend { focus(table: id); return }
+            var collapse: String?
+            if extend {
+                toggle(id)
+                // Toggled off: nothing to drag.
+                guard selectedTables.contains(id) else { return }
+            } else if selectedTables.contains(id), selectedTables.count > 1 {
+                // Keep the group so it can be dragged; a click without a drag selects just this one.
+                setSelection(selectedTables, primary: id)
+                collapse = id
+            } else {
+                select(id)
+            }
+            finishSlide()
+            guard let scene else { return }
+            let origins = Dictionary(uniqueKeysWithValues: selectedTables.compactMap { t in scene.positions[t].map { (t, $0) } })
+            drag = .tables(grab: toWorld(p), origins: origins, collapse: collapse, moved: false)
+            // Bring to front, keeping the grabbed table on top.
+            withoutAnimation {
+                for t in selectedTables where t != id { if let l = tableLayers[t] { tablesLayer.addSublayer(l) } }
+                if let l = tableLayers[id] { tablesLayer.addSublayer(l) }
+            }
+        } else if spaceHeld {
+            startPan(at: p)
         } else {
             let edge = hitEdge(p)
-            if let edge, e.clickCount == 2 { selectRef(edge, reveal: true); return }
-            drag = .pan(start: p, offset: offset, edge: edge)
-            NSCursor.closedHand.push()
+            if let edge, e.clickCount == 2, !extend { selectRef(edge, reveal: true); return }
+            drag = .marquee(start: p, base: extend ? selectedTables : [], edge: edge, active: false)
         }
     }
+
+    private func startPan(at p: CGPoint) {
+        drag = .pan(start: p, offset: offset, edge: nil)
+        NSCursor.closedHand.push()
+    }
+
+    // Right- or middle-button drag pans too.
+    override func rightMouseDown(with e: NSEvent) { hideTooltip(); startPan(at: convert(e.locationInWindow, from: nil)) }
+    override func rightMouseDragged(with e: NSEvent) { mouseDragged(with: e) }
+    override func rightMouseUp(with e: NSEvent) { mouseUp(with: e) }
+    override func otherMouseDown(with e: NSEvent) { rightMouseDown(with: e) }
+    override func otherMouseDragged(with e: NSEvent) { mouseDragged(with: e) }
+    override func otherMouseUp(with e: NSEvent) { mouseUp(with: e) }
 
     override func mouseDragged(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         switch drag {
         case .pan(let start, let o, _):
             setViewport(zoom: zoom, offset: CGPoint(x: o.x + p.x - start.x, y: o.y + p.y - start.y))
-        case .table(let id, let grab, _):
+        case .tables(let grab, let origins, let collapse, _):
             let w = toWorld(p)
-            moveTable(id, to: CGPoint(x: (w.x - grab.x).rounded(), y: (w.y - grab.y).rounded()))
-            drag = .table(id: id, grab: grab, moved: true)
+            let dx = (w.x - grab.x).rounded(), dy = (w.y - grab.y).rounded()
+            setPositions(origins.mapValues { CGPoint(x: $0.x + dx, y: $0.y + dy) })
+            drag = .tables(grab: grab, origins: origins, collapse: collapse, moved: true)
+        case .marquee(let start, let base, let edge, let active):
+            guard active || hypot(p.x - start.x, p.y - start.y) >= 3 else { return }
+            if !active { drag = .marquee(start: start, base: base, edge: edge, active: true) }
+            updateMarquee(from: start, to: p, base: base)
         case nil: break
         }
     }
@@ -613,24 +707,105 @@ final class DiagramCanvas: NSView {
             if hypot(p.x - start.x, p.y - start.y) < 3 {
                 if let edge { selectRef(edge) } else { clearSelection() }
             }
-        case .table(let id, _, let moved):
-            if moved, let pos = scene?.positions[id] { onTablesMoved?([id: pos]) }
+        case .tables(_, let origins, let collapse, let moved):
+            let new = Dictionary(uniqueKeysWithValues: origins.keys.compactMap { t in scene?.positions[t].map { (t, $0) } })
+            if moved, new != origins {
+                onTablesMoved?(origins, new, false)
+            } else if let collapse {
+                select(collapse)
+            }
+        case .marquee(_, _, let edge, let active):
+            marqueeLayer.isHidden = true
+            // A click (not a drag): select the line under it, or clear the selection.
+            if !active {
+                let extend = !e.modifierFlags.intersection([.shift, .command]).isEmpty
+                if let edge, !extend { selectRef(edge) } else if !extend { clearSelection() }
+            }
         case nil: break
         }
         drag = nil
     }
 
-    private func moveTable(_ id: String, to origin: CGPoint) {
+    private func updateMarquee(from start: CGPoint, to p: CGPoint, base: Set<String>) {
+        guard let scene else { return }
+        let r = CGRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y))
+        marqueeLayer.path = CGPath(rect: r, transform: nil)
+        marqueeLayer.isHidden = false
+        let a = toWorld(r.origin), b = toWorld(CGPoint(x: r.maxX, y: r.maxY))
+        let world = CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y)
+        var hits = base
+        for t in scene.schema.tables where scene.rect(t.id).intersects(world) { hits.insert(t.id) }
+        if hits != selectedTables { setSelection(hits, primary: selection) }
+    }
+
+    private func nudge(by dir: CGPoint, step: CGFloat) {
+        finishSlide()
+        guard let scene else { return }
+        let old = Dictionary(uniqueKeysWithValues: selectedTables.compactMap { t in scene.positions[t].map { (t, $0) } })
+        let new = old.mapValues { CGPoint(x: $0.x + dir.x * step, y: $0.y + dir.y * step) }
+        setPositions(new)
+        hideTooltip()
+        onTablesMoved?(old, new, true)
+    }
+
+    /// Moves tables and re-paths their edges and group frames, each edge and group once.
+    private func setPositions(_ moved: [String: CGPoint]) {
         guard scene != nil else { return }
-        scene!.positions[id] = origin
+        var edges = Set<Int>()
+        var groups = Set<String>()
         withoutAnimation {
-            tableLayers[id]?.position = origin
-            for i in edgesByTable[id] ?? [] {
+            for (id, origin) in moved where scene!.positions[id] != nil {
+                scene!.positions[id] = origin
+                tableLayers[id]?.position = origin
+                edges.formUnion(edgesByTable[id] ?? [])
+                if let g = scene!.style.groupOf[id] { groups.insert(g) }
+            }
+            for i in edges {
                 edgeLayers[i].path = scene!.edgePath(scene!.schema.refs[i])
                 edgeBoxes[i] = edgeLayers[i].path?.boundingBoxOfPath ?? .null
             }
-            if let g = scene!.style.groupOf[id] { updateGroupFrames(only: g) }
+            for g in groups { updateGroupFrames(only: g) }
         }
+    }
+
+    /// Moves tables to new positions, sliding them there when `animated`.
+    /// Positions of tables that aren't in the scene are ignored.
+    func movePositions(_ target: [String: CGPoint], animated: Bool) {
+        finishSlide()
+        guard let scene else { return }
+        let target = target.filter { scene.positions[$0.key] != nil && scene.positions[$0.key] != $0.value }
+        guard !target.isEmpty else { return }
+        // Re-pathing hundreds of edges per frame isn't smooth; big moves jump.
+        guard animated, target.count <= 400, window != nil else { setPositions(target); return }
+        let from = Dictionary(uniqueKeysWithValues: target.keys.map { ($0, scene.positions[$0]!) })
+        let link = displayLink(target: self, selector: #selector(slideStep))
+        slide = (from, target, CACurrentMediaTime(), link)
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func slideStep(_ link: CADisplayLink) {
+        guard let s = slide else { link.invalidate(); return }
+        let t = min(1, (CACurrentMediaTime() - s.start) / 0.25)
+        let e = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2  // ease in-out
+        var frame: [String: CGPoint] = [:]
+        for (id, end) in s.to {
+            let a = s.from[id] ?? end
+            frame[id] = CGPoint(x: (a.x + (end.x - a.x) * e).rounded(), y: (a.y + (end.y - a.y) * e).rounded())
+        }
+        setPositions(frame)
+        if t >= 1 { stopSlide() }
+    }
+
+    /// Jumps a running slide to its end.
+    private func finishSlide() {
+        guard let s = slide else { return }
+        stopSlide()
+        setPositions(s.to)
+    }
+
+    private func stopSlide() {
+        slide?.link.invalidate()
+        slide = nil
     }
 
     override func mouseMoved(with e: NSEvent) {
@@ -643,7 +818,7 @@ final class DiagramCanvas: NSView {
         let edge = id == nil ? hitEdge(p) : nil
         if edge != hoveredEdge {
             hoveredEdge = edge
-            (edge == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+            if !spaceHeld { (edge == nil ? NSCursor.arrow : NSCursor.pointingHand).set() }
         }
         if let edge { updateEdgeTooltip(at: p, ref: edge) } else { updateTooltip(at: p, table: id) }
     }
@@ -655,11 +830,30 @@ final class DiagramCanvas: NSView {
     }
 
     override func keyDown(with e: NSEvent) {
+        if e.keyCode == 49 {  // space: hold to pan with a drag
+            if !spaceHeld { spaceHeld = true; NSCursor.openHand.push() }
+            return
+        }
+        let arrows: [UInt16: CGPoint] = [123: CGPoint(x: -1, y: 0), 124: CGPoint(x: 1, y: 0), 125: CGPoint(x: 0, y: 1), 126: CGPoint(x: 0, y: -1)]
+        if let dir = arrows[e.keyCode], !selectedTables.isEmpty {
+            nudge(by: dir, step: e.modifierFlags.contains(.shift) ? 10 : 1)
+            return
+        }
         switch e.charactersIgnoringModifiers {
         case "\u{1B}": clearSelection()  // Esc
         case "f" where e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty: zoomToFit()
         default: super.keyDown(with: e)
         }
+    }
+
+    override func keyUp(with e: NSEvent) {
+        if e.keyCode == 49, spaceHeld { spaceHeld = false; NSCursor.pop(); return }
+        super.keyUp(with: e)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        if spaceHeld { spaceHeld = false; NSCursor.pop() }
+        return super.resignFirstResponder()
     }
 
     // MARK: tooltips (table and column notes)

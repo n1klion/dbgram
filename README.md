@@ -21,8 +21,14 @@ hundreds of tables.
 - **Live reload.** Keep editing the `.dbml` in your editor; every open window updates when you save.
   This works with editors that save by replacing the file, and with files that are deleted and recreated
   (e.g. by `git checkout`). Tables you dragged stay where you put them.
-- **Auto layout.** Referenced tables go on the left and the tables pointing at them on the right. Each
-  `TableGroup` becomes its own colored cluster.
+- **Auto layout in three styles** (the Arrange button in the toolbar):
+  - **Left to Right:** referenced tables on the left, the tables pointing at them on the right, folded to
+    fit the screen. Each `TableGroup` becomes its own colored cluster.
+  - **Pipeline:** one left-to-right flow along the data lineage. Each `TableGroup` is a stage with its
+    tables stacked in a column.
+  - **Compact:** as little empty space as possible, with related tables next to each other.
+
+  Each file remembers its style, and ⌘Z undoes an arrange.
 - **Relationships you can inspect.** Click a line to highlight it and its two columns, and read it in plain
   words: one/many, optional ends, `on delete` / `on update`.
 - **Notes everywhere.** Hover a column or table header to read its note; the inspector shows notes,
@@ -66,14 +72,17 @@ open -a DBGram samples/shop.dbml
 
 | Action | How |
 | --- | --- |
-| Pan | two-finger scroll, or drag the background |
+| Pan | two-finger scroll, space + drag, or right-drag |
 | Zoom | pinch, ⌘/ctrl + scroll, mouse wheel, ⌘= / ⌘- |
 | Fit / 100% | ⌘0 or `F` / ⌘1 |
 | Find a table or column | ⌘F, then Enter |
 | Focus a table | double-click it, or click it in the sidebar |
 | Inspect a relationship | click its line; double-click to zoom to both tables |
 | Move a table | drag it (saved per file in `~/Library/Application Support/DBGram`) |
-| Re-arrange everything | ⌘⇧L |
+| Select several tables | drag a rectangle on the background (⇧ adds to the selection), ⌘-click or ⇧-click (canvas or sidebar), ⌘A |
+| Move the selection | drag any selected table, or arrow keys (⇧ = 10 pt) |
+| Undo / redo a move or an auto-arrange | ⌘Z / ⌘⇧Z |
+| Re-arrange everything | ⌘⇧L or the Arrange button (its arrow picks Left to Right, Pipeline or Compact) |
 | Paste DBML from the clipboard | ⌘⇧V |
 | Export PNG | ⌘⇧E |
 | Clear the selection | Esc |
@@ -105,15 +114,22 @@ DBGram --render schema.dbml out.png [--dark] [--scale 2]
 ### Releases
 
 `.github/workflows/build.yml` runs the tests and builds a universal `DBGram.app` on every push to `main`
-and on pull requests; the zipped app is attached to the workflow run under **Artifacts**. Pushing a
-version tag also publishes a GitHub Release:
+and on pull requests; the zipped app is attached to the workflow run under **Artifacts**.
+
+To publish a release, open a pull request into `main` from a branch named `release/vX.Y.Z`:
 
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git switch -c release/v0.2.0
+git push -u origin release/v0.2.0
+# open the pull request on GitHub and merge it
 ```
 
-Tags starting with `v0.` and tags with a suffix (`v1.0.0-beta.1`) are published as **pre-releases**.
+Merging it runs `.github/workflows/release-publish.yml`. That workflow tags the merge commit `v0.2.0`,
+builds the app, publishes a GitHub Release with the zip and generated notes, and deletes the branch.
+Pushing a tag by hand (`git tag v0.2.0 && git push origin v0.2.0`) still works too.
+
+Versions starting with `0.` and versions with a suffix (`v1.0.0-beta.1`) are published as
+**pre-releases**.
 
 ### Project layout
 

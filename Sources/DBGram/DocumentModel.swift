@@ -8,10 +8,14 @@ import Observation
 final class DocumentModel {
     var url: URL?
     var schema = Schema()
+    /// The primary selected table (inspector, sidebar scrolling); always in `selectedTables` when set.
     var selection: String?
+    var selectedTables: Set<String> = []
     /// Index into `schema.refs` of the selected relationship. Mutually exclusive with `selection`.
     var selectedRef: Int?
     var loadError: String?
+    /// The auto-arrange style of this file: the last one used on it, else the last one used anywhere.
+    var layoutStyle = DocumentModel.defaultLayoutStyle
     var isPasted = false
     /// Bumped on every new scene so the canvas knows to reload.
     private(set) var revision = 0
@@ -30,6 +34,10 @@ final class DocumentModel {
     /// so a table that disappears mid-edit comes back where it was.
     @ObservationIgnored private var rememberedPositions: [String: CGPoint] = [:]
     @ObservationIgnored private var emptyRecheck: DispatchWorkItem?
+    /// Counts undo registrations, so a nudge only merges into the step registered just before it.
+    @ObservationIgnored private var undoSerial = 0
+    /// The undo step of the last arrow-key nudge while it can still absorb more presses.
+    @ObservationIgnored private weak var lastNudge: MoveStep?
 
     var title: String {
         if let url { return url.lastPathComponent }
@@ -41,11 +49,13 @@ final class DocumentModel {
     // MARK: loading
 
     func open(_ url: URL) {
+        if url != self.url { undoManager?.removeAllActions(withTarget: self) }
         self.url = url
         isPasted = false
         store = LayoutStore(for: url)
         pendingViewport = store?.load().viewport
         rememberedPositions = store?.load().positions ?? [:]
+        layoutStyle = store?.load().style ?? Self.defaultLayoutStyle
         lastSource = nil
         RecentFiles.add(url)
         reload(initial: true)
@@ -53,11 +63,13 @@ final class DocumentModel {
     }
 
     func loadPasted(_ source: String) {
+        undoManager?.removeAllActions(withTarget: self)
         url = nil
         watcher = nil
         store = nil
         isPasted = true
         rememberedPositions = [:]
+        layoutStyle = Self.defaultLayoutStyle
         lastSource = source
         apply(DBML.parse(source), saved: [:], initial: true)
     }
@@ -99,12 +111,13 @@ final class DocumentModel {
     private func apply(_ schema: Schema, saved: [String: CGPoint], initial: Bool) {
         var scene = DiagramScene(schema: schema, positions: [:])
         scene.positions = saved.isEmpty
-            ? SchemaLayout.compute(schema: schema, sizes: scene.sizes)
-            : SchemaLayout.placeNew(schema: schema, sizes: scene.sizes, existing: saved)
+            ? SchemaLayout.compute(schema: schema, sizes: scene.sizes, style: layoutStyle)
+            : SchemaLayout.placeNew(schema: schema, sizes: scene.sizes, existing: saved, style: layoutStyle)
         self.schema = schema
         self.scene = scene
         self.style = scene.style
         rememberedPositions.merge(scene.positions) { _, new in new }
+        selectedTables = selectedTables.filter { schema.table(id: $0) != nil }
         if let s = selection, schema.table(id: s) == nil { selection = nil }
         if let r = selectedRef, r >= schema.refs.count { selectedRef = nil }
         revision += 1
@@ -144,25 +157,101 @@ final class DocumentModel {
         }
     }
 
-    func resetLayout() {
-        guard var scene else { return }
-        scene.positions = SchemaLayout.compute(schema: schema, sizes: scene.sizes)
-        self.scene = scene
-        rememberedPositions = scene.positions
-        store?.save(positions: [:])
-        revision += 1
-        canvas?.load(scene)
-        canvas?.zoomToFit()
+    /// Re-arranges every table in `style` (default: this file's style) and remembers the choice.
+    func arrange(_ style: LayoutStyle? = nil) {
+        guard let scene, let canvas else { return }
+        let style = style ?? layoutStyle
+        let old = scene.positions
+        let oldViewport = (canvas.zoom, canvas.offset)
+        let oldStyle = layoutStyle
+        let new = SchemaLayout.compute(schema: schema, sizes: scene.sizes, style: style)
+        setStyle(style)
+        setPositions(new, animated: true)
+        // Fit to where the tables end up, not where the slide starts.
+        if let arranged = self.scene { canvas.fit(arranged.contentBounds, maxZoom: 1.2, animated: true) }
+        // Arranging again in the same style changes nothing: an undo step for it would look like ⌘Z doing nothing.
+        if new != old || style != oldStyle { registerArrangeUndo(restoring: old, viewport: oldViewport, style: oldStyle) }
     }
 
-    // MARK: canvas callbacks
+    private static let defaultStyleKey = "DefaultLayoutStyle"
+    private static var defaultLayoutStyle: LayoutStyle {
+        UserDefaults.standard.string(forKey: defaultStyleKey).flatMap(LayoutStyle.init(rawValue:)) ?? .leftRight
+    }
 
-    func tablesMoved(_ moved: [String: CGPoint]) {
+    private func setStyle(_ style: LayoutStyle) {
+        layoutStyle = style
+        store?.save(style: style)
+        UserDefaults.standard.set(style.rawValue, forKey: Self.defaultStyleKey)
+    }
+
+    // MARK: moving tables & undo
+
+    /// The window's undo manager, so Edit → Undo / Redo (⌘Z / ⌘⇧Z) reach it.
+    private var undoManager: UndoManager? { canvas?.window?.undoManager }
+
+    /// Arrow-key presses less than a second apart, on the same tables, are one undo step.
+    func tablesMoved(old: [String: CGPoint], new: [String: CGPoint], isNudge: Bool = false) {
+        remember(new)
+        if isNudge, let last = lastNudge, last.serial == undoSerial, Set(last.new.keys) == Set(new.keys),
+           CACurrentMediaTime() - last.time < 1 {
+            last.new = new
+            last.time = CACurrentMediaTime()
+            return
+        }
+        let step = MoveStep(old: old, new: new)
+        registerMoveUndo(step)
+        lastNudge = isNudge ? step : nil
+    }
+
+    /// Applies positions to the scene, the saved layout and the canvas.
+    /// Tables that aren't in the schema right now (removed by an edit) are only remembered.
+    private func setPositions(_ positions: [String: CGPoint], animated: Bool) {
+        remember(positions)
+        canvas?.movePositions(positions, animated: animated)
+    }
+
+    private func remember(_ positions: [String: CGPoint]) {
         guard var scene else { return }
-        for (id, p) in moved { scene.positions[id] = p }
+        for (id, p) in positions where scene.positions[id] != nil { scene.positions[id] = p }
         self.scene = scene
-        rememberedPositions.merge(moved) { _, new in new }
+        rememberedPositions.merge(positions) { _, new in new }
         store?.save(positions: rememberedPositions)
+    }
+
+    /// One undo step. A class so a merged nudge can update `new` after it was registered.
+    private final class MoveStep {
+        let old: [String: CGPoint]
+        var new: [String: CGPoint]
+        var time = CACurrentMediaTime()
+        var serial = 0
+        init(old: [String: CGPoint], new: [String: CGPoint]) { self.old = old; self.new = new }
+    }
+
+    private func registerMoveUndo(_ step: MoveStep) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { model in
+            model.setPositions(step.old, animated: true)
+            model.registerMoveUndo(MoveStep(old: step.new, new: step.old))
+        }
+        undoManager.setActionName(step.old.count == 1 ? "Move Table" : "Move \(step.old.count) Tables")
+        undoSerial += 1
+        step.serial = undoSerial
+    }
+
+    /// Undoing an arrange also brings back the zoom, scroll position and style from before it.
+    private func registerArrangeUndo(restoring old: [String: CGPoint], viewport: (CGFloat, CGPoint), style: LayoutStyle) {
+        guard let undoManager, let scene, let canvas else { return }
+        let current = scene.positions
+        let currentViewport = (canvas.zoom, canvas.offset)
+        let currentStyle = layoutStyle
+        undoManager.registerUndo(withTarget: self) { model in
+            model.setStyle(style)
+            model.setPositions(old, animated: true)
+            model.canvas?.setViewport(zoom: viewport.0, offset: viewport.1, animated: true)
+            model.registerArrangeUndo(restoring: current, viewport: currentViewport, style: currentStyle)
+        }
+        undoManager.setActionName("Auto-Arrange")
+        undoSerial += 1
     }
 
     func viewportChanged(zoom: CGFloat, offset: CGPoint) {
@@ -171,15 +260,21 @@ final class DocumentModel {
 
     func selectRef(_ i: Int?, reveal: Bool) {
         selectedRef = i
-        if i != nil { selection = nil }
+        if i != nil { selection = nil; selectedTables = [] }
         canvas?.selectRef(i, reveal: reveal)
     }
 
     func select(_ id: String?, focus: Bool) {
         selection = id
+        selectedTables = id.map { [$0] } ?? []
         if id != nil { selectedRef = nil }
         guard let canvas else { return }
         if let id, focus { canvas.focus(table: id) } else { canvas.select(id) }
+    }
+
+    /// ⌘-click in the sidebar: add or remove a table without losing the rest of the selection.
+    func toggle(_ id: String) {
+        canvas?.toggle(id)
     }
 
     // MARK: export
@@ -204,6 +299,9 @@ final class LayoutStore {
     struct Data: Codable {
         var positions: [String: [CGFloat]] = [:]
         var viewport: Viewport?
+        /// A `LayoutStyle` raw value. A plain string so an unknown value never fails decoding
+        /// (which would lose the saved positions).
+        var style: String?
     }
 
     private let file: URL
@@ -219,8 +317,14 @@ final class LayoutStore {
         data = (try? JSONDecoder().decode(Data.self, from: Foundation.Data(contentsOf: file))) ?? Data()
     }
 
-    func load() -> (positions: [String: CGPoint], viewport: Viewport?) {
-        (data.positions.compactMapValues { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }, data.viewport)
+    func load() -> (positions: [String: CGPoint], viewport: Viewport?, style: LayoutStyle?) {
+        (data.positions.compactMapValues { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }, data.viewport,
+         data.style.flatMap(LayoutStyle.init(rawValue:)))
+    }
+
+    func save(style: LayoutStyle) {
+        data.style = style.rawValue
+        scheduleWrite()
     }
 
     func save(positions: [String: CGPoint]) {

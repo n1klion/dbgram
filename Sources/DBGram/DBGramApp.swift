@@ -1,4 +1,5 @@
 import AppKit
+import DBMLKit
 import SwiftUI
 
 struct DBGramApp: App {
@@ -29,7 +30,12 @@ struct DBGramApp: App {
                 Button("Zoom to Fit") { actions?.zoomFit() }.keyboardShortcut("0")
                 Button("Actual Size") { actions?.zoomActual() }.keyboardShortcut("1")
                 Divider()
-                Button("Auto-Arrange Tables") { actions?.resetLayout() }.keyboardShortcut("l", modifiers: [.command, .shift])
+                Button("Auto-Arrange Tables") { actions?.arrange(nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
+                Menu("Auto-Arrange Style") {
+                    ForEach(LayoutStyle.allCases, id: \.self) { style in
+                        Button(style.title) { actions?.arrange(style) }
+                    }
+                }
                 Button("Toggle Inspector") { actions?.toggleInspector() }.keyboardShortcut("i", modifiers: [.command, .option])
                 Divider()
             }
@@ -116,7 +122,7 @@ final class WindowActions {
     var open: () -> Void = {}
     var paste: () -> Void = {}
     var export: () -> Void = {}
-    var resetLayout: () -> Void = {}
+    var arrange: (LayoutStyle?) -> Void = { _ in }
     var find: () -> Void = {}
     var zoomIn: () -> Void = {}
     var zoomOut: () -> Void = {}

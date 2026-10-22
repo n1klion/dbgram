@@ -105,8 +105,10 @@ struct ContentView: View {
                             Section {
                                 ForEach(group.tables) { t in
                                     SidebarRow(table: t, color: model.style?.headerColors[t.id] ?? Palette.neutral,
-                                               selected: model.selection == t.id) {
-                                        model.select(t.id, focus: true)
+                                               selected: model.selectedTables.contains(t.id)) {
+                                        // ⌘/⇧-click adds to the selection, like on the canvas.
+                                        if !NSEvent.modifierFlags.intersection([.command, .shift]).isEmpty { model.toggle(t.id) }
+                                        else { model.select(t.id, focus: true) }
                                     }
                                     .id(t.id)
                                 }
@@ -140,10 +142,23 @@ struct ContentView: View {
             Button { model.canvas?.zoomToFit() } label: { Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass") }
                 .help("Zoom to fit (⌘0)")
             Menu {
+                Picker("Style", selection: Binding(get: { model.layoutStyle }, set: { model.arrange($0) })) {
+                    ForEach(LayoutStyle.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                Label("Arrange", systemImage: "rectangle.3.group")
+            } primaryAction: {
+                model.arrange()
+            }
+            // The toolbar keeps its menu once built; a new identity rebuilds it with the right checkmark.
+            .id(model.layoutStyle)
+            .help("Auto-arrange tables (\(model.layoutStyle.title), ⌘⇧L). Use the arrow to pick a style.")
+            Menu {
                 Button("Open…", action: openPanel)
                 Button("Paste DBML from Clipboard", action: pasteFromClipboard)
                 Divider()
-                Button("Auto-Arrange Tables", action: model.resetLayout)
                 Button("Export PNG…", action: model.exportPNG)
             } label: { Label("More", systemImage: "ellipsis.circle") }
             Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
@@ -192,7 +207,7 @@ struct ContentView: View {
         actions.open = openPanel
         actions.paste = pasteFromClipboard
         actions.export = { model.exportPNG() }
-        actions.resetLayout = { model.resetLayout() }
+        actions.arrange = { model.arrange($0) }
         actions.find = { searchFocused = true }
         actions.zoomIn = { model.canvas?.zoom(by: 1.25, animated: true) }
         actions.zoomOut = { model.canvas?.zoom(by: 0.8, animated: true) }
@@ -265,13 +280,14 @@ struct CanvasRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> DiagramCanvas {
         let canvas = DiagramCanvas(frame: .zero)
-        canvas.onSelect = { [weak model] id in
+        canvas.onSelect = { [weak model] id, tables in
             if model?.selection != id { model?.selection = id }
+            if model?.selectedTables != tables { model?.selectedTables = tables }
         }
         canvas.onSelectRef = { [weak model] i in
             if model?.selectedRef != i { model?.selectedRef = i }
         }
-        canvas.onTablesMoved = { [weak model] in model?.tablesMoved($0) }
+        canvas.onTablesMoved = { [weak model] old, new, isNudge in model?.tablesMoved(old: old, new: new, isNudge: isNudge) }
         canvas.onViewportChanged = { [weak model] z, o in model?.viewportChanged(zoom: z, offset: o) }
         model.canvas = canvas
         model.push(to: canvas, fit: true)
@@ -339,6 +355,8 @@ struct InspectorView: View {
     var body: some View {
         if let i = model.selectedRef, i < model.schema.refs.count {
             RelationInspector(model: model, index: i, ref: model.schema.refs[i])
+        } else if model.selectedTables.count > 1 {
+            MultiTableInspector(model: model)
         } else if let id = model.selection, let table = model.schema.table(id: id) {
             TableInspector(model: model, table: table)
         } else {
@@ -352,11 +370,13 @@ struct InspectorView: View {
                 Text("Select a table to see its columns, notes and relationships.")
                     .foregroundStyle(.secondary).font(.callout)
                 VStack(alignment: .leading, spacing: 6) {
-                    shortcut("Pan", "two-finger scroll / drag background")
+                    shortcut("Pan", "two-finger scroll / space + drag / right-drag")
                     shortcut("Zoom", "pinch / ⌘ + scroll / mouse wheel")
                     shortcut("Fit", "⌘0 or F")
                     shortcut("Find", "⌘F")
                     shortcut("Focus table", "double-click")
+                    shortcut("Select", "drag a rectangle; ⌘/⇧-click; ⌘A")
+                    shortcut("Move", "drag, or arrow keys (⇧ = 10 pt)")
                     shortcut("Relationship", "click a line; double-click to show both ends")
                 }
                 .font(.caption)
@@ -372,6 +392,63 @@ struct InspectorView: View {
             Text(a).fontWeight(.medium).frame(width: 74, alignment: .leading)
             Text(b).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Several tables selected: their names and the relationships between them.
+private struct MultiTableInspector: View {
+    let model: DocumentModel
+
+    var body: some View {
+        let tables = model.schema.tables.filter { model.selectedTables.contains($0.id) }
+        let refs = model.schema.refs.enumerated().filter {
+            model.selectedTables.contains($0.element.from.tableID) && model.selectedTables.contains($0.element.to.tableID)
+        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("\(tables.count) tables selected").font(.title3.weight(.semibold))
+                Text("Drag any of them to move them together, or use the arrow keys. ⌘Z undoes a move.")
+                    .font(.callout).foregroundStyle(.secondary)
+
+                section("Tables")
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(tables) { t in
+                        Button { model.canvas?.center(on: t.id) } label: {
+                            HStack(spacing: 8) {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color(nsColor: model.style?.headerColors[t.id] ?? Palette.neutral))
+                                    .frame(width: 10, height: 10)
+                                Text(t.displayName).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                Text("\(t.columns.count)").font(.caption).monospacedDigit().foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show \(t.displayName)")
+                    }
+                }
+
+                if !refs.isEmpty {
+                    section("Relationships between them")
+                    ForEach(refs, id: \.offset) { index, r in
+                        Button { model.selectRef(index, reveal: true) } label: {
+                            Text("\(r.from.tableID).\(r.from.columns.joined(separator: ", ")) \(RelationText(r).op) \(r.to.tableID).\(r.to.columns.joined(separator: ", "))")
+                                .font(.system(.callout, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private func section(_ title: String) -> some View {
+        Text(title.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
     }
 }
 

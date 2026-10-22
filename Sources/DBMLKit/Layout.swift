@@ -25,8 +25,19 @@ public enum LayeredLayout {
         }
     }
 
+    /// Defaults give the classic left-right layout, folded to stay roughly 16:10.
+    public struct Options {
+        /// Split very tall layers into several columns.
+        public var splitTallLayers = true
+        /// Wrap a long chain of columns into stacked bands.
+        public var wrapBands = true
+        public init(splitTallLayers: Bool = true, wrapBands: Bool = true) {
+            self.splitTallLayers = splitTallLayers; self.wrapBands = wrapBands
+        }
+    }
+
     /// Returns the top-left origin of every node.
-    public static func layout(nodes: [Node], edges: [Edge], spacing: Spacing = Spacing()) -> [String: CGPoint] {
+    public static func layout(nodes: [Node], edges: [Edge], spacing: Spacing = Spacing(), options: Options = Options()) -> [String: CGPoint] {
         guard !nodes.isEmpty else { return [:] }
         let index = Dictionary(nodes.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
         var edgeSet: Set<Edge> = []
@@ -51,7 +62,7 @@ public enum LayeredLayout {
         for members in components.values {
             let memberSet = Set(members)
             let local = pairs.filter { memberSet.contains($0.0) }
-            let positions = layoutComponent(members: members.sorted(), edges: local, nodes: nodes, spacing: spacing)
+            let positions = layoutComponent(members: members.sorted(), edges: local, nodes: nodes, spacing: spacing, options: options)
             var maxX: CGFloat = 0, maxY: CGFloat = 0
             for (i, p) in positions {
                 maxX = max(maxX, p.x + nodes[i].size.width)
@@ -85,7 +96,7 @@ public enum LayeredLayout {
         return result
     }
 
-    private static func layoutComponent(members: [Int], edges: [(Int, Int)], nodes: [Node], spacing: Spacing) -> [Int: CGPoint] {
+    private static func layoutComponent(members: [Int], edges: [(Int, Int)], nodes: [Node], spacing: Spacing, options: Options) -> [Int: CGPoint] {
         if members.count == 1 { return [members[0]: .zero] }
 
         var children: [Int: [Int]] = [:]
@@ -175,7 +186,7 @@ public enum LayeredLayout {
         var columns: [[Int]] = []
         for l in layers {
             let height = l.reduce(CGFloat(0)) { $0 + nodes[$1].size.height + spacing.vertical }
-            let parts = max(1, Int((height / targetHeight).rounded(.up)))
+            let parts = options.splitTallLayers ? max(1, Int((height / targetHeight).rounded(.up))) : 1
             if parts == 1 { columns.append(l); continue }
             let per = height / CGFloat(parts)
             var col: [Int] = [], acc: CGFloat = 0
@@ -226,7 +237,7 @@ public enum LayeredLayout {
         let totalWidth = colWidths.reduce(0) { $0 + $1 + spacing.horizontal }
         let targetWidth = (area * 16 / 10).squareRoot() * 1.3
         var bands: [[Int]] = [Array(columns.indices)]
-        if totalWidth > targetWidth * 1.5 {
+        if options.wrapBands, totalWidth > targetWidth * 1.5 {
             bands = []
             var band: [Int] = [], w: CGFloat = 0
             for ci in columns.indices {
@@ -281,18 +292,42 @@ public enum LayeredLayout {
 
 /// Lays out a whole schema: each TableGroup is laid out as its own cluster, ungrouped tables
 /// form clusters by connectivity, and the clusters are then arranged with the same algorithm.
+/// The auto-arrange styles.
+public enum LayoutStyle: String, CaseIterable, Sendable {
+    /// Referenced tables on the left, referencing tables on the right, folded to fit the screen.
+    case leftRight
+    /// One long left-to-right flow along the data lineage; TableGroups become stages.
+    case pipeline
+    /// As little empty space as possible, related tables kept close.
+    case compact
+
+    public var title: String {
+        switch self {
+        case .leftRight: return "Left to Right"
+        case .pipeline: return "Pipeline"
+        case .compact: return "Compact"
+        }
+    }
+}
+
 public enum SchemaLayout {
     public static let groupPadding: CGFloat = 28
     public static let groupTitleHeight: CGFloat = 30
 
-    public static func compute(schema: Schema, sizes: [String: CGSize]) -> [String: CGPoint] {
-        let edges = schema.refs.map { LayeredLayout.Edge(parent: $0.parent.tableID, child: $0.child.tableID) }
-        let nodes = schema.tables.map { LayeredLayout.Node(id: $0.id, size: sizes[$0.id] ?? CGSize(width: 200, height: 100)) }
-        let groups = schema.groups.filter { !$0.tableIDs.isEmpty }
-        if groups.isEmpty { return LayeredLayout.layout(nodes: nodes, edges: edges) }
+    public static func compute(schema: Schema, sizes: [String: CGSize], style: LayoutStyle = .leftRight) -> [String: CGPoint] {
+        switch style {
+        case .leftRight: return leftRight(schema: schema, sizes: sizes)
+        case .pipeline: return pipeline(schema: schema, sizes: sizes)
+        case .compact: return compact(schema: schema, sizes: sizes)
+        }
+    }
 
+    private typealias Cluster = (id: String, members: [String], isGroup: Bool)
+
+    /// Each TableGroup is a cluster; ungrouped tables form clusters by connected component.
+    private static func clusters(schema: Schema, edges: [LayeredLayout.Edge], groups: [TableGroup]) -> (clusters: [Cluster], clusterOf: [String: String]) {
         var clusterOf: [String: String] = [:]
-        var clusters: [(id: String, members: [String], isGroup: Bool)] = []
+        var clusters: [Cluster] = []
         for g in groups {
             let id = "group:\(g.name)"
             clusters.append((id, g.tableIDs, true))
@@ -322,6 +357,43 @@ public enum SchemaLayout {
                 for t in comps[r]! { clusterOf[t] = id }
             }
         }
+        return (clusters, clusterOf)
+    }
+
+    private static func edges(_ schema: Schema) -> [LayeredLayout.Edge] {
+        schema.refs.map { LayeredLayout.Edge(parent: $0.parent.tableID, child: $0.child.tableID) }
+    }
+
+    private static func size(_ id: String, _ sizes: [String: CGSize]) -> CGSize { sizes[id] ?? CGSize(width: 200, height: 100) }
+
+    /// Group members (tables that exist, each in one group only), skipping empty groups.
+    private static func groups(_ schema: Schema) -> [TableGroup] {
+        var seen: Set<String> = []
+        return schema.groups.compactMap { g in
+            var g = g
+            g.tableIDs = g.tableIDs.filter { schema.table(id: $0) != nil && seen.insert($0).inserted }
+            return g.tableIDs.isEmpty ? nil : g
+        }
+    }
+
+    /// Positions relative to a group box's top-left corner, and the box size.
+    private static func boxed(_ positions: [String: CGPoint], sizes: [String: CGSize]) -> (positions: [String: CGPoint], size: CGSize) {
+        var w: CGFloat = 0, h: CGFloat = 0
+        for (id, p) in positions {
+            let s = size(id, sizes)
+            w = max(w, p.x + s.width); h = max(h, p.y + s.height)
+        }
+        return (positions.mapValues { CGPoint(x: $0.x + groupPadding, y: $0.y + groupPadding + groupTitleHeight) },
+                CGSize(width: w + groupPadding * 2, height: h + groupPadding * 2 + groupTitleHeight))
+    }
+
+    /// Referenced tables on the left, referencing tables on the right; groups are clusters.
+    private static func leftRight(schema: Schema, sizes: [String: CGSize]) -> [String: CGPoint] {
+        let edges = edges(schema)
+        let nodes = schema.tables.map { LayeredLayout.Node(id: $0.id, size: size($0.id, sizes)) }
+        let groups = schema.groups.filter { !$0.tableIDs.isEmpty }
+        if groups.isEmpty { return LayeredLayout.layout(nodes: nodes, edges: edges) }
+        let (clusters, clusterOf) = clusters(schema: schema, edges: edges, groups: groups)
 
         var local: [String: [String: CGPoint]] = [:]
         var clusterSizes: [String: CGSize] = [:]
@@ -361,13 +433,161 @@ public enum SchemaLayout {
         return result
     }
 
+    /// Left to right along the data lineage. Each TableGroup is a stage: its tables stacked in one
+    /// column, upstream tables on top. Every ungrouped table is its own stage. A stage sits right of
+    /// every stage it depends on (except along cycles); stages at the same depth share a column.
+    private static func pipeline(schema: Schema, sizes: [String: CGSize]) -> [String: CGPoint] {
+        let edges = edges(schema)
+        var unitOf: [String: String] = [:]
+        var local: [String: [String: CGPoint]] = [:]
+        var units: [LayeredLayout.Node] = []
+        let gap = LayeredLayout.Spacing().vertical
+        for g in groups(schema) {
+            let id = "group:\(g.name)"
+            let members = Set(g.tableIDs)
+            // Lineage order inside the stage: the left-right layout's columns, read top to bottom.
+            let inner = LayeredLayout.layout(
+                nodes: g.tableIDs.map { LayeredLayout.Node(id: $0, size: size($0, sizes)) },
+                edges: edges.filter { members.contains($0.parent) && members.contains($0.child) },
+                options: .init(splitTallLayers: false, wrapBands: false))
+            let order = g.tableIDs.sorted { a, b in
+                let pa = inner[a] ?? .zero, pb = inner[b] ?? .zero
+                return pa.x != pb.x ? pa.x < pb.x : pa.y < pb.y
+            }
+            var column: [String: CGPoint] = [:]
+            var y: CGFloat = 0
+            for t in order { column[t] = CGPoint(x: 0, y: y); y += size(t, sizes).height + gap }
+            let box = boxed(column, sizes: sizes)
+            local[id] = box.positions
+            units.append(.init(id: id, size: box.size))
+            for t in g.tableIDs { unitOf[t] = id }
+        }
+        for t in schema.tables where unitOf[t.id] == nil {
+            let id = "table:\(t.id)"
+            local[id] = [t.id: .zero]
+            units.append(.init(id: id, size: size(t.id, sizes)))
+            unitOf[t.id] = id
+        }
+        let unitEdges = edges.compactMap { e -> LayeredLayout.Edge? in
+            guard let a = unitOf[e.parent], let b = unitOf[e.child], a != b else { return nil }
+            return LayeredLayout.Edge(parent: a, child: b)
+        }
+        let origins = LayeredLayout.layout(
+            nodes: units, edges: unitEdges,
+            spacing: .init(horizontal: 180, vertical: 50, component: 120),
+            options: .init(splitTallLayers: false, wrapBands: false))
+        var result: [String: CGPoint] = [:]
+        for u in units {
+            let o = origins[u.id] ?? .zero
+            for (id, p) in local[u.id] ?? [:] { result[id] = CGPoint(x: o.x + p.x, y: o.y + p.y) }
+        }
+        return result
+    }
+
+    /// As little empty space as possible: each group (and each set of connected ungrouped tables)
+    /// is packed into rows with related tables next to each other, then the clusters are packed.
+    private static func compact(schema: Schema, sizes: [String: CGSize]) -> [String: CGPoint] {
+        let edges = edges(schema)
+        let (clusters, _) = clusters(schema: schema, edges: edges, groups: groups(schema))
+        var neighbors: [String: [String]] = [:]
+        for e in edges where e.parent != e.child {
+            neighbors[e.parent, default: []].append(e.child)
+            neighbors[e.child, default: []].append(e.parent)
+        }
+        var local: [String: [String: CGPoint]] = [:]
+        var boxes: [(id: String, size: CGSize)] = []
+        for c in clusters {
+            let order = relatedOrder(c.members, neighbors: neighbors)
+            let packed = shelfPack(order.map { ($0, size($0, sizes)) }, gapX: 50, gapY: 40)
+            if c.isGroup {
+                let box = boxed(packed, sizes: sizes)
+                local[c.id] = box.positions
+                boxes.append((c.id, box.size))
+            } else {
+                local[c.id] = packed
+                var w: CGFloat = 0, h: CGFloat = 0
+                for (id, p) in packed { w = max(w, p.x + size(id, sizes).width); h = max(h, p.y + size(id, sizes).height) }
+                boxes.append((c.id, CGSize(width: w, height: h)))
+            }
+        }
+        // Big clusters first; ties keep the order of the file.
+        let ordered = boxes.enumerated().sorted {
+            let a = $0.element.size.width * $0.element.size.height, b = $1.element.size.width * $1.element.size.height
+            return a != b ? a > b : $0.offset < $1.offset
+        }.map(\.element)
+        let origins = shelfPack(ordered, gapX: 70, gapY: 60)
+        var result: [String: CGPoint] = [:]
+        for c in clusters {
+            let o = origins[c.id] ?? .zero
+            for (id, p) in local[c.id] ?? [:] { result[id] = CGPoint(x: o.x + p.x, y: o.y + p.y) }
+        }
+        return result
+    }
+
+    /// Breadth-first from the most connected table, so related tables end up next to each other.
+    static func relatedOrder(_ members: [String], neighbors: [String: [String]]) -> [String] {
+        let set = Set(members)
+        let degree = Dictionary(uniqueKeysWithValues: members.map { ($0, neighbors[$0]?.filter(set.contains).count ?? 0) })
+        let byDegree = members.enumerated().sorted { degree[$0.element]! != degree[$1.element]! ? degree[$0.element]! > degree[$1.element]! : $0.offset < $1.offset }.map(\.element)
+        var seen: Set<String> = [], order: [String] = []
+        for start in byDegree where !seen.contains(start) {
+            var queue = [start]
+            seen.insert(start)
+            while !queue.isEmpty {
+                let n = queue.removeFirst()
+                order.append(n)
+                let next = (neighbors[n] ?? []).filter { set.contains($0) && !seen.contains($0) }
+                for m in next.sorted(by: { degree[$0]! > degree[$1]! }) where seen.insert(m).inserted { queue.append(m) }
+            }
+        }
+        return order
+    }
+
+    /// Rows of items in the given order. Tries every row width at which the wrapping changes and keeps
+    /// the one with the smallest bounding box, penalizing shapes far from 16:10.
+    static func shelfPack(_ items: [(id: String, size: CGSize)], gapX: CGFloat, gapY: CGFloat) -> [String: CGPoint] {
+        func pack(_ limit: CGFloat) -> (positions: [String: CGPoint], size: CGSize) {
+            var result: [String: CGPoint] = [:]
+            var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, width: CGFloat = 0
+            for item in items {
+                if x > 0, x + item.size.width > limit {
+                    x = 0; y += rowHeight + gapY; rowHeight = 0
+                }
+                result[item.id] = CGPoint(x: x, y: y)
+                width = max(width, x + item.size.width)
+                x += item.size.width + gapX
+                rowHeight = max(rowHeight, item.size.height)
+            }
+            return (result, CGSize(width: width, height: y + rowHeight))
+        }
+        func score(_ s: CGSize) -> CGFloat {
+            guard s.width > 0, s.height > 0 else { return 0 }
+            let ratio = s.width / s.height
+            return s.width * s.height * max(ratio / 1.6, 1.6 / ratio)
+        }
+        // Candidate widths: the end of each prefix of items laid out in one row.
+        var candidates: [CGFloat] = []
+        var acc: CGFloat = 0
+        for item in items { acc += item.size.width; candidates.append(acc); acc += gapX }
+        // Big inputs: a sample of widths is plenty and keeps this linear-ish.
+        let stride = max(1, candidates.count / 200)
+        var best = pack(candidates.last ?? 0)
+        var bestScore = score(best.size)
+        for i in Swift.stride(from: 0, to: candidates.count, by: stride) {
+            let p = pack(candidates[i])
+            let sc = score(p.size)
+            if sc < bestScore { best = p; bestScore = sc }
+        }
+        return best.positions
+    }
+
     /// Places tables that have no position yet next to an already placed neighbor,
     /// or to the right of everything, without moving existing tables.
-    public static func placeNew(schema: Schema, sizes: [String: CGSize], existing: [String: CGPoint]) -> [String: CGPoint] {
+    public static func placeNew(schema: Schema, sizes: [String: CGSize], existing: [String: CGPoint], style: LayoutStyle = .leftRight) -> [String: CGPoint] {
         var result = existing.filter { id, _ in schema.tables.contains { $0.id == id } }
         let missing = schema.tables.map(\.id).filter { result[$0] == nil }
         guard !missing.isEmpty else { return result }
-        if result.isEmpty { return compute(schema: schema, sizes: sizes) }
+        if result.isEmpty { return compute(schema: schema, sizes: sizes, style: style) }
 
         func rect(_ id: String) -> CGRect { CGRect(origin: result[id]!, size: sizes[id] ?? .zero) }
         func free(_ r: CGRect) -> Bool { !result.keys.contains { rect($0).insetBy(dx: -20, dy: -20).intersects(r) } }
