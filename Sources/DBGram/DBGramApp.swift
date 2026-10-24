@@ -20,6 +20,7 @@ struct DBGramApp: App {
                 Button("Paste DBML from Clipboard") { actions?.paste() }.keyboardShortcut("v", modifiers: [.command, .shift])
                 Divider()
                 Button("Export PNG…") { actions?.export() }.keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Export Visible Area as PNG…") { actions?.exportVisible() }.keyboardShortcut("e", modifiers: [.command, .shift, .option])
             }
             CommandGroup(after: .textEditing) {
                 Button("Find Table…") { actions?.find() }.keyboardShortcut("f")
@@ -122,6 +123,7 @@ final class WindowActions {
     var open: () -> Void = {}
     var paste: () -> Void = {}
     var export: () -> Void = {}
+    var exportVisible: () -> Void = {}
     var arrange: (LayoutStyle?) -> Void = { _ in }
     var find: () -> Void = {}
     var zoomIn: () -> Void = {}

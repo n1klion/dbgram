@@ -159,7 +159,8 @@ struct ContentView: View {
                 Button("Open…", action: openPanel)
                 Button("Paste DBML from Clipboard", action: pasteFromClipboard)
                 Divider()
-                Button("Export PNG…", action: model.exportPNG)
+                Button("Export PNG…") { model.exportPNG() }
+                Button("Export Visible Area as PNG…") { model.exportPNG(visibleOnly: true) }
             } label: { Label("More", systemImage: "ellipsis.circle") }
             Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
         }
@@ -207,6 +208,7 @@ struct ContentView: View {
         actions.open = openPanel
         actions.paste = pasteFromClipboard
         actions.export = { model.exportPNG() }
+        actions.exportVisible = { model.exportPNG(visibleOnly: true) }
         actions.arrange = { model.arrange($0) }
         actions.find = { searchFocused = true }
         actions.zoomIn = { model.canvas?.zoom(by: 1.25, animated: true) }
