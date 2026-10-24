@@ -314,7 +314,7 @@ final class DiagramCanvas: NSView {
         }
     }
 
-    private var edgeLineWidth: CGFloat { 1.5 * max(1, 0.5 / zoom) }
+    var edgeLineWidth: CGFloat { 1.5 * max(1, 0.5 / zoom) }
 
     private func styleEdges() {
         for i in edgeLayers.indices { styleEdge(i) }
@@ -544,7 +544,7 @@ final class DiagramCanvas: NSView {
         CGPoint(x: (p.x - offset.x) / zoom, y: (p.y - offset.y) / zoom)
     }
 
-    private var visibleWorldRect: CGRect {
+    var visibleWorldRect: CGRect {
         CGRect(x: -offset.x / zoom, y: -offset.y / zoom, width: bounds.width / zoom, height: bounds.height / zoom)
     }
 

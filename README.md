@@ -36,7 +36,7 @@ hundreds of tables.
 - **DBML support:** tables, schemas and aliases, column settings, inline and standalone refs (including
   composite and optional `?` refs), indexes, enums, `TableGroup`, `TablePartial`, notes, `headercolor`,
   `Project`, and `Records` (skipped). Broken lines are listed with line numbers, and the rest still renders.
-- **Light and dark mode**, PNG export, find (⌘F), paste DBML from the clipboard.
+- **Light and dark mode**, PNG export (the whole diagram or just the visible area), find (⌘F), paste DBML from the clipboard.
 
 | Click a relationship | Small schemas too |
 | --- | --- |
@@ -84,7 +84,7 @@ open -a DBGram samples/shop.dbml
 | Undo / redo a move or an auto-arrange | ⌘Z / ⌘⇧Z |
 | Re-arrange everything | ⌘⇧L or the Arrange button (its arrow picks Left to Right, Pipeline or Compact) |
 | Paste DBML from the clipboard | ⌘⇧V |
-| Export PNG | ⌘⇧E |
+| Export PNG: whole diagram / visible area | ⌘⇧E / ⌥⌘⇧E |
 | Clear the selection | Esc |
 
 ## Build from source

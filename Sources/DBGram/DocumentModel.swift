@@ -279,14 +279,20 @@ final class DocumentModel {
 
     // MARK: export
 
-    func exportPNG() {
-        guard let scene, let window = canvas?.window else { return }
+    /// Saves the whole diagram, or with `visibleOnly` just what the canvas shows, at screen resolution.
+    func exportPNG(visibleOnly: Bool = false) {
+        guard let scene, let canvas, let window = canvas.window else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = (url?.deletingPathExtension().lastPathComponent ?? "schema") + ".png"
+        let name = url?.deletingPathExtension().lastPathComponent ?? "schema"
+        panel.nameFieldStringValue = name + (visibleOnly ? " (view)" : "") + ".png"
         let theme = Theme.current(window.effectiveAppearance)
+        let area = visibleOnly ? canvas.visibleWorldRect : nil
+        let scale = visibleOnly ? canvas.zoom * window.backingScaleFactor : 2
+        let edgeWidth = visibleOnly ? canvas.edgeLineWidth : 1.5
         panel.beginSheetModal(for: window) { response in
-            guard response == .OK, let dest = panel.url, let image = ImageExporter.render(scene, theme: theme) else { return }
+            guard response == .OK, let dest = panel.url,
+                  let image = ImageExporter.render(scene, theme: theme, scale: scale, area: area, edgeWidth: edgeWidth) else { return }
             try? ImageExporter.writePNG(image, to: dest)
         }
     }

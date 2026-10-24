@@ -2,11 +2,12 @@ import AppKit
 import DBMLKit
 import UniformTypeIdentifiers
 
-/// Renders a whole diagram into a bitmap, using the same drawing code as the canvas.
+/// Renders a diagram into a bitmap, using the same drawing code as the canvas.
 enum ImageExporter {
-    static func render(_ scene: DiagramScene, theme: Theme, scale: CGFloat = 2) -> CGImage? {
+    /// Draws the whole diagram, or only `area` (world coordinates, e.g. the visible part of the canvas).
+    static func render(_ scene: DiagramScene, theme: Theme, scale: CGFloat = 2, area: CGRect? = nil, edgeWidth: CGFloat = 1.5) -> CGImage? {
         let margin: CGFloat = 48
-        let bounds = scene.contentBounds.insetBy(dx: -margin, dy: -margin)
+        let bounds = area ?? scene.contentBounds.insetBy(dx: -margin, dy: -margin)
         // Keep huge diagrams under a sane bitmap size.
         let maxPixels: CGFloat = 16384
         let s = min(scale, maxPixels / max(bounds.width, 1), maxPixels / max(bounds.height, 1))
@@ -23,17 +24,18 @@ enum ImageExporter {
 
         ctx.setFillColor(theme.background.cgColor)
         ctx.fill(bounds)
+        ctx.clip(to: bounds)
 
         for g in scene.schema.groups {
-            guard let frame = scene.groupFrame(g), let color = scene.style.groupColors[g.name] else { continue }
+            guard let frame = scene.groupFrame(g), frame.intersects(bounds), let color = scene.style.groupColors[g.name] else { continue }
             GroupRenderer.draw(name: g.name, frame: frame, color: color, theme: theme, in: ctx)
         }
 
-        ctx.setLineWidth(1.5)
+        ctx.setLineWidth(edgeWidth)
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
         for ref in scene.schema.refs {
-            guard let path = scene.edgePath(ref) else { continue }
+            guard let path = scene.edgePath(ref), path.boundingBoxOfPath.insetBy(dx: -edgeWidth, dy: -edgeWidth).intersects(bounds) else { continue }
             ctx.addPath(path)
             ctx.setStrokeColor((ref.color.flatMap(NSColor.init(hex:)) ?? theme.edge).cgColor)
             ctx.strokePath()
@@ -41,6 +43,8 @@ enum ImageExporter {
 
         for t in scene.schema.tables {
             let r = scene.rect(t.id)
+            // 12 pt covers the shadow.
+            guard r.insetBy(dx: -12, dy: -12).intersects(bounds) else { continue }
             ctx.saveGState()
             ctx.setShadow(offset: CGSize(width: 0, height: -2), blur: 10, color: NSColor.black.withAlphaComponent(CGFloat(theme.shadowOpacity)).cgColor)
             ctx.addPath(CGPath(roundedRect: r, cornerWidth: Metrics.cornerRadius, cornerHeight: Metrics.cornerRadius, transform: nil))
