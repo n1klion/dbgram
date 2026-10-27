@@ -5,7 +5,7 @@ import AppKit
 enum DebugHooks {
     /// DBGRAM_SCREENSHOT=out.png renders the whole window to a PNG a few seconds after opening, then quits.
     /// Optional: DBGRAM_APPEARANCE=light|dark, DBGRAM_SELECT_TABLE=name,
-    /// DBGRAM_SELECT_REF=table.column (a relationship by its source column).
+    /// DBGRAM_SELECT_REF=table.column (a relationship by its source column), DBGRAM_VIEW_GROUP=name.
     static func screenshotIfRequested(_ model: DocumentModel) {
         let env = ProcessInfo.processInfo.environment
         guard let out = env["DBGRAM_SCREENSHOT"] else { return }
@@ -14,6 +14,7 @@ enum DebugHooks {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             model.canvas?.window?.setContentSize(NSSize(width: 1440, height: 860))
+            if let g = env["DBGRAM_VIEW_GROUP"] { model.selectView(g) }
             if let t = env["DBGRAM_SELECT_TABLE"] { model.select(t, focus: false) }
             if let r = env["DBGRAM_SELECT_REF"] {
                 let parts = r.split(separator: ".", maxSplits: 1).map(String.init)
