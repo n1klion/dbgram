@@ -33,7 +33,7 @@ struct ContentView: View {
                 .inspectorColumnWidth(min: 240, ideal: 290, max: 420)
         }
         .navigationTitle(model.title)
-        .navigationSubtitle(model.hasContent ? "\(model.schema.tables.count) tables · \(model.schema.refs.count) refs" : "")
+        .navigationSubtitle(subtitle)
         .toolbar { toolbar }
         .onAppear {
             Opener.register(openWindow)
@@ -58,6 +58,12 @@ struct ContentView: View {
     }
 
     // MARK: sidebar
+
+    private var subtitle: String {
+        guard model.hasContent else { return "" }
+        let counts = "\(model.schema.tables.count) tables · \(model.schema.refs.count) refs"
+        return model.viewGroup.map { "\($0) · \(counts)" } ?? counts
+    }
 
     private var filteredGroups: [(name: String, color: Color?, tables: [DBMLKit.Table])] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -136,6 +142,20 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            if !model.file.groups.isEmpty {
+                Picker("Group", selection: Binding(get: { model.viewGroup ?? "" }, set: { model.selectView($0.isEmpty ? nil : $0) })) {
+                    Text("All Tables  (\(model.file.tables.count))").tag("")
+                    Divider()
+                    ForEach(model.file.groups, id: \.name) { g in
+                        Text("\(g.name)  (\(g.tableIDs.count))").tag(g.name)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(minWidth: 160)
+                .help("Show one table group (⌘[ and ⌘] switch)")
+            }
+        }
         ToolbarItemGroup(placement: .primaryAction) {
             Button { model.canvas?.zoom(by: 0.8, animated: true) } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
             Button { model.canvas?.zoom(by: 1.25, animated: true) } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
@@ -210,6 +230,8 @@ struct ContentView: View {
         actions.export = { model.exportPNG() }
         actions.exportVisible = { model.exportPNG(visibleOnly: true) }
         actions.arrange = { model.arrange($0) }
+        actions.nextView = { model.selectView(offset: 1) }
+        actions.previousView = { model.selectView(offset: -1) }
         actions.find = { searchFocused = true }
         actions.zoomIn = { model.canvas?.zoom(by: 1.25, animated: true) }
         actions.zoomOut = { model.canvas?.zoom(by: 0.8, animated: true) }

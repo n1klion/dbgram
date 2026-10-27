@@ -14,6 +14,18 @@ public struct Schema: Sendable, Equatable {
 
     public func table(id: String) -> Table? { tableIndex[id].map { tables[$0] } }
 
+    /// Only the tables of one `TableGroup` and the refs between them; nil when there is no such group.
+    /// Everything else (project, enums, diagnostics) is kept, so the subset still describes the whole file.
+    public func subset(group name: String) -> Schema? {
+        guard let group = groups.first(where: { $0.name == name }) else { return nil }
+        let ids = Set(group.tableIDs)
+        var s = self
+        s.tables = tables.filter { ids.contains($0.id) }
+        s.refs = refs.filter { ids.contains($0.from.tableID) && ids.contains($0.to.tableID) }
+        s.groups = [group]
+        return s
+    }
+
     private mutating func reindex() {
         tableIndex = Dictionary(tables.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
     }

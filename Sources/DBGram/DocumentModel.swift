@@ -3,11 +3,16 @@ import CryptoKit
 import DBMLKit
 import Observation
 
-/// State of one window: the open file, its parsed schema, table positions and selection.
+/// State of one window: the open file, its parsed schema, the group on screen, table positions and selection.
 @Observable
 final class DocumentModel {
     var url: URL?
-    var schema = Schema()
+    /// Everything in the file.
+    private(set) var file = Schema()
+    /// What's on screen: the whole file, or one `TableGroup` with the refs between its tables.
+    private(set) var schema = Schema()
+    /// The `TableGroup` on screen, or nil for all tables. Every view shares one layout.
+    private(set) var viewGroup: String?
     /// The primary selected table (inspector, sidebar scrolling); always in `selectedTables` when set.
     var selection: String?
     var selectedTables: Set<String> = []
@@ -23,6 +28,9 @@ final class DocumentModel {
     private(set) var style: SceneStyle?
     /// Not observed: table positions change on every drag and must not re-render SwiftUI views.
     @ObservationIgnored private(set) var scene: DiagramScene?
+    /// Measured sizes of every table in the file, also those hidden by the current view.
+    @ObservationIgnored private var fileSizes: [String: CGSize] = [:]
+    @ObservationIgnored private var fileStyle: SceneStyle?
 
     @ObservationIgnored weak var canvas: DiagramCanvas?
     @ObservationIgnored private var watcher: FileWatcher?
@@ -56,6 +64,7 @@ final class DocumentModel {
         pendingViewport = store?.load().viewport
         rememberedPositions = store?.load().positions ?? [:]
         layoutStyle = store?.load().style ?? Self.defaultLayoutStyle
+        viewGroup = store?.load().view
         lastSource = nil
         RecentFiles.add(url)
         reload(initial: true)
@@ -70,6 +79,7 @@ final class DocumentModel {
         isPasted = true
         rememberedPositions = [:]
         layoutStyle = Self.defaultLayoutStyle
+        viewGroup = nil
         lastSource = source
         apply(DBML.parse(source), saved: [:], initial: true)
     }
@@ -105,23 +115,56 @@ final class DocumentModel {
         }
         lastSource = source
         apply(DBML.parse(source), saved: rememberedPositions, initial: initial)
-        Self.debugLog(String(format: "reload %@ tables=%d: %.1fms", url.lastPathComponent, schema.tables.count, (CACurrentMediaTime() - t0) * 1000))
+        Self.debugLog(String(format: "reload %@ tables=%d: %.1fms", url.lastPathComponent, file.tables.count, (CACurrentMediaTime() - t0) * 1000))
     }
 
-    private func apply(_ schema: Schema, saved: [String: CGPoint], initial: Bool) {
-        var scene = DiagramScene(schema: schema, positions: [:])
-        scene.positions = saved.isEmpty
-            ? SchemaLayout.compute(schema: schema, sizes: scene.sizes, style: layoutStyle)
-            : SchemaLayout.placeNew(schema: schema, sizes: scene.sizes, existing: saved, style: layoutStyle)
-        self.schema = schema
+    /// Lays out the whole file (so new tables never land on tables hidden by the view), then shows the view.
+    private func apply(_ parsed: Schema, saved: [String: CGPoint], initial: Bool) {
+        let full = DiagramScene(schema: parsed, positions: [:])
+        let positions = saved.isEmpty
+            ? SchemaLayout.compute(schema: parsed, sizes: full.sizes, style: layoutStyle)
+            : SchemaLayout.placeNew(schema: parsed, sizes: full.sizes, existing: saved, style: layoutStyle)
+        file = parsed
+        fileSizes = full.sizes
+        fileStyle = full.style
+        rememberedPositions.merge(positions) { _, new in new }
+        if let g = viewGroup, !parsed.groups.contains(where: { $0.name == g }) { viewGroup = nil }
+        rebuild(fit: initial)
+    }
+
+    /// Builds the scene of the current view from the file and the shared positions.
+    private func rebuild(fit: Bool) {
+        guard let fileStyle else { return }
+        let visible = viewGroup.flatMap { file.subset(group: $0) } ?? file
+        let scene = DiagramScene(schema: visible, style: fileStyle, sizes: fileSizes, positions: rememberedPositions)
+        let oldRef = selectedRef.flatMap { $0 < schema.refs.count ? schema.refs[$0] : nil }
+        schema = visible
         self.scene = scene
-        self.style = scene.style
-        rememberedPositions.merge(scene.positions) { _, new in new }
+        style = scene.style
         selectedTables = selectedTables.filter { schema.table(id: $0) != nil }
         if let s = selection, schema.table(id: s) == nil { selection = nil }
-        if let r = selectedRef, r >= schema.refs.count { selectedRef = nil }
+        selectedRef = oldRef.flatMap { old in schema.refs.firstIndex { $0.from == old.from && $0.to == old.to } }
         revision += 1
-        if let canvas { push(to: canvas, fit: initial) }
+        if let canvas { push(to: canvas, fit: fit) }
+    }
+
+    /// Shows one `TableGroup` (nil: all tables) and zooms to fit it.
+    func selectView(_ group: String?) {
+        guard group != viewGroup, group.map({ file.subset(group: $0) != nil }) ?? true else { return }
+        viewGroup = group
+        store?.save(view: group)
+        selection = nil
+        selectedTables = []
+        selectedRef = nil
+        pendingViewport = nil
+        rebuild(fit: true)
+    }
+
+    /// ⌘] / ⌘[: the next or previous view, in the order All, then the groups as declared.
+    func selectView(offset: Int) {
+        let views: [String?] = [nil] + file.groups.map(\.name)
+        guard views.count > 1, let i = views.firstIndex(of: viewGroup) else { return }
+        selectView(views[(i + offset + views.count) % views.count])
     }
 
     /// Called by the canvas wrapper when it appears or the revision changes.
@@ -157,14 +200,20 @@ final class DocumentModel {
         }
     }
 
-    /// Re-arranges every table in `style` (default: this file's style) and remembers the choice.
+    /// Positions of every table in the file, including those hidden by the current view.
+    private var filePositions: [String: CGPoint] {
+        rememberedPositions.filter { fileSizes[$0.key] != nil }
+    }
+
+    /// Re-arranges every table of the file in `style` (default: this file's style) and remembers the choice.
+    /// In a group view the whole layout changes too, since all views share it.
     func arrange(_ style: LayoutStyle? = nil) {
-        guard let scene, let canvas else { return }
+        guard let canvas else { return }
         let style = style ?? layoutStyle
-        let old = scene.positions
+        let old = filePositions
         let oldViewport = (canvas.zoom, canvas.offset)
         let oldStyle = layoutStyle
-        let new = SchemaLayout.compute(schema: schema, sizes: scene.sizes, style: style)
+        let new = SchemaLayout.compute(schema: file, sizes: fileSizes, style: style)
         setStyle(style)
         setPositions(new, animated: true)
         // Fit to where the tables end up, not where the slide starts.
@@ -240,8 +289,8 @@ final class DocumentModel {
 
     /// Undoing an arrange also brings back the zoom, scroll position and style from before it.
     private func registerArrangeUndo(restoring old: [String: CGPoint], viewport: (CGFloat, CGPoint), style: LayoutStyle) {
-        guard let undoManager, let scene, let canvas else { return }
-        let current = scene.positions
+        guard let undoManager, let canvas else { return }
+        let current = filePositions
         let currentViewport = (canvas.zoom, canvas.offset)
         let currentStyle = layoutStyle
         undoManager.registerUndo(withTarget: self) { model in
@@ -308,6 +357,8 @@ final class LayoutStore {
         /// A `LayoutStyle` raw value. A plain string so an unknown value never fails decoding
         /// (which would lose the saved positions).
         var style: String?
+        /// The `TableGroup` shown last, nil for all tables.
+        var view: String?
     }
 
     private let file: URL
@@ -323,9 +374,14 @@ final class LayoutStore {
         data = (try? JSONDecoder().decode(Data.self, from: Foundation.Data(contentsOf: file))) ?? Data()
     }
 
-    func load() -> (positions: [String: CGPoint], viewport: Viewport?, style: LayoutStyle?) {
+    func load() -> (positions: [String: CGPoint], viewport: Viewport?, style: LayoutStyle?, view: String?) {
         (data.positions.compactMapValues { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }, data.viewport,
-         data.style.flatMap(LayoutStyle.init(rawValue:)))
+         data.style.flatMap(LayoutStyle.init(rawValue:)), data.view)
+    }
+
+    func save(view: String?) {
+        data.view = view
+        scheduleWrite()
     }
 
     func save(style: LayoutStyle) {
