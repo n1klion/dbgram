@@ -224,6 +224,14 @@ struct DiagramScene {
         self.positions = positions
     }
 
+    /// A scene showing part of a bigger one, with the colors and measurements of the whole.
+    init(schema: Schema, style: SceneStyle, sizes: [String: CGSize], positions: [String: CGPoint]) {
+        self.schema = schema
+        self.style = style
+        self.sizes = sizes.filter { schema.table(id: $0.key) != nil }
+        self.positions = positions.filter { schema.table(id: $0.key) != nil }
+    }
+
     func rect(_ id: String) -> CGRect {
         CGRect(origin: positions[id] ?? .zero, size: sizes[id] ?? .zero)
     }

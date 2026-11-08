@@ -37,6 +37,9 @@ struct DBGramApp: App {
                         Button(style.title) { actions?.arrange(style) }
                     }
                 }
+                Button("Next Group") { actions?.nextView() }.keyboardShortcut("]")
+                Button("Previous Group") { actions?.previousView() }.keyboardShortcut("[")
+                Divider()
                 Button("Toggle Inspector") { actions?.toggleInspector() }.keyboardShortcut("i", modifiers: [.command, .option])
                 Divider()
             }
@@ -125,6 +128,8 @@ final class WindowActions {
     var export: () -> Void = {}
     var exportVisible: () -> Void = {}
     var arrange: (LayoutStyle?) -> Void = { _ in }
+    var nextView: () -> Void = {}
+    var previousView: () -> Void = {}
     var find: () -> Void = {}
     var zoomIn: () -> Void = {}
     var zoomOut: () -> Void = {}

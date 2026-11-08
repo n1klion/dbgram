@@ -114,3 +114,18 @@ func stylesProduceCleanLayouts(_ style: LayoutStyle) throws {
     let s = try sample("shop.dbml")
     #expect(SchemaLayout.compute(schema: s, sizes: sizes(s)) == SchemaLayout.compute(schema: s, sizes: sizes(s), style: .leftRight))
 }
+
+@Test func subsetKeepsOneGroup() throws {
+    let shop = try sample("shop.dbml")
+    let group = try #require(shop.groups.first)
+    let sub = try #require(shop.subset(group: group.name))
+    let ids = Set(group.tableIDs)
+    #expect(Set(sub.tables.map(\.id)) == ids)
+    #expect(sub.groups == [group])
+    #expect(!sub.refs.isEmpty)
+    #expect(sub.refs.allSatisfy { ids.contains($0.from.tableID) && ids.contains($0.to.tableID) })
+    #expect(sub.refs.count == shop.refs.filter { ids.contains($0.from.tableID) && ids.contains($0.to.tableID) }.count)
+    #expect(sub.diagnostics == shop.diagnostics && sub.enums == shop.enums)
+    #expect(sub.table(id: group.tableIDs[0]) != nil)
+    #expect(shop.subset(group: "no such group") == nil)
+}

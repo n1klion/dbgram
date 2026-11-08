@@ -29,6 +29,9 @@ hundreds of tables.
   - **Compact:** as little empty space as possible, with related tables next to each other.
 
   Each file remembers its style, and ⌘Z undoes an arrange.
+- **Table groups on their own.** Pick a `TableGroup` in the toolbar picker to see only its tables and the
+  relationships between them; switch with ⌘[ / ⌘]. Every view shares one layout, so a table moved in a
+  group view moves in the full diagram too.
 - **Relationships you can inspect.** Click a line to highlight it and its two columns, and read it in plain
   words: one/many, optional ends, `on delete` / `on update`.
 - **Notes everywhere.** Hover a column or table header to read its note; the inspector shows notes,
@@ -82,6 +85,7 @@ open -a DBGram samples/shop.dbml
 | Select several tables | drag a rectangle on the background (⇧ adds to the selection), ⌘-click or ⇧-click (canvas or sidebar), ⌘A |
 | Move the selection | drag any selected table, or arrow keys (⇧ = 10 pt) |
 | Undo / redo a move or an auto-arrange | ⌘Z / ⌘⇧Z |
+| Show one table group | the picker in the toolbar, or ⌘[ / ⌘] |
 | Re-arrange everything | ⌘⇧L or the Arrange button (its arrow picks Left to Right, Pipeline or Compact) |
 | Paste DBML from the clipboard | ⌘⇧V |
 | Export PNG: whole diagram / visible area | ⌘⇧E / ⌥⌘⇧E |
